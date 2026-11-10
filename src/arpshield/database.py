@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 from typing import Any, Iterable
@@ -51,6 +52,7 @@ class DatabaseManager:
         spoofed_ip TEXT NOT NULL,
         packet_count INTEGER DEFAULT 1,
         evidence_summary TEXT NOT NULL,
+        evidence_details TEXT NOT NULL DEFAULT '{{}}',
         mitigation_applied INTEGER DEFAULT 0
     );
 
@@ -70,6 +72,7 @@ class DatabaseManager:
     def __init__(self, db_path: str | Path):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._session_alert_start_id: int | None = None
 
     def connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.db_path)
@@ -83,6 +86,11 @@ class DatabaseManager:
             connection.executescript(self.CREATE_TABLES)
             self._migrate_device_types(connection)
             self._migrate_alert_types(connection)
+            self._migrate_alert_details(connection)
+            if self._session_alert_start_id is None:
+                self._session_alert_start_id = connection.execute(
+                    "SELECT COALESCE(MAX(id), 0) FROM security_alerts"
+                ).fetchone()[0]
         finally:
             connection.close()
 
@@ -147,6 +155,7 @@ class DatabaseManager:
                     spoofed_ip TEXT NOT NULL,
                     packet_count INTEGER DEFAULT 1,
                     evidence_summary TEXT NOT NULL,
+                    evidence_details TEXT NOT NULL DEFAULT '{{}}',
                     mitigation_applied INTEGER DEFAULT 0
                 )
                 """
@@ -174,6 +183,17 @@ class DatabaseManager:
         except Exception:
             connection.rollback()
             raise
+
+    @staticmethod
+    def _migrate_alert_details(connection: sqlite3.Connection) -> None:
+        columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(security_alerts)")
+        }
+        if "evidence_details" not in columns:
+            connection.execute(
+                "ALTER TABLE security_alerts ADD COLUMN evidence_details TEXT NOT NULL DEFAULT '{}'"
+            )
+            connection.commit()
 
     def add_baseline_entry(
         self,
@@ -229,19 +249,42 @@ class DatabaseManager:
         packet_count: int,
         evidence_summary: str,
         mitigation_applied: int = 0,
-    ) -> None:
+        evidence_details: dict[str, Any] | None = None,
+    ) -> bool:
         connection = self.connect()
         try:
-            connection.execute(
+            cursor = connection.execute(
                 """
                 INSERT INTO security_alerts (
                     alert_type, severity, attacker_mac, spoofed_ip,
-                    packet_count, evidence_summary, mitigation_applied
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    packet_count, evidence_summary, evidence_details, mitigation_applied
+                )
+                SELECT ?, ?, ?, ?, ?, ?, ?, ?
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM security_alerts
+                    WHERE alert_type = ?
+                        AND attacker_mac = ? COLLATE NOCASE
+                        AND spoofed_ip = ? COLLATE NOCASE
+                        AND timestamp_utc >= datetime('now', '-30 seconds')
+                )
                 """,
-                (alert_type, severity, attacker_mac, spoofed_ip, packet_count, evidence_summary, mitigation_applied),
+                (
+                    alert_type,
+                    severity,
+                    attacker_mac,
+                    spoofed_ip,
+                    packet_count,
+                    evidence_summary,
+                    json.dumps(evidence_details or {}, ensure_ascii=False, sort_keys=True),
+                    mitigation_applied,
+                    alert_type,
+                    attacker_mac,
+                    spoofed_ip,
+                ),
             )
             connection.commit()
+            return cursor.rowcount == 1
         finally:
             connection.close()
 
@@ -279,6 +322,8 @@ class DatabaseManager:
     def dashboard_snapshot(self, recent_limit: int = 100, trend_days: int = 12) -> dict[str, Any]:
         if recent_limit < 1 or trend_days < 1:
             raise ValueError("recent_limit y trend_days deben ser mayores que cero")
+        if self._session_alert_start_id is None:
+            raise RuntimeError("La base de datos debe inicializarse antes de consultar el dashboard")
 
         connection = self.connect()
         try:
@@ -290,29 +335,38 @@ class DatabaseManager:
                 SELECT
                     COUNT(*) AS alert_count,
                     COALESCE(SUM(CASE WHEN severity IN ('HIGH', 'CRITICAL') THEN 1 ELSE 0 END), 0)
-                        AS high_severity_count
-                FROM security_alerts
-                """
+                            AS high_severity_count
+                    FROM security_alerts
+                    WHERE id > ?
+                    """,
+                (self._session_alert_start_id,),
             ).fetchone()
             alert_type_counts = connection.execute(
-                "SELECT alert_type, COUNT(*) AS count FROM security_alerts GROUP BY alert_type"
+                """
+                SELECT alert_type, COUNT(*) AS count
+                FROM security_alerts
+                WHERE id > ?
+                GROUP BY alert_type
+                """,
+                (self._session_alert_start_id,),
             ).fetchall()
             daily_counts = connection.execute(
                 """
                 SELECT date(timestamp_utc) AS alert_date, COUNT(*) AS count
                 FROM security_alerts
-                WHERE timestamp_utc >= datetime('now', ?)
+                WHERE id > ? AND timestamp_utc >= datetime('now', ?)
                 GROUP BY date(timestamp_utc)
                 """,
-                (f"-{trend_days - 1} days",),
+                (self._session_alert_start_id, f"-{trend_days - 1} days"),
             ).fetchall()
             recent_alerts = connection.execute(
                 """
                 SELECT * FROM security_alerts
+                WHERE id > ?
                 ORDER BY timestamp_utc DESC, id DESC
                 LIMIT ?
                 """,
-                (recent_limit,),
+                (self._session_alert_start_id, recent_limit),
             ).fetchall()
             return {
                 "baseline_count": baseline_count,

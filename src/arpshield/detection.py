@@ -37,6 +37,8 @@ CAPTURE_FIELDS = (
     "dns.aaaa",
     "dhcpv6.msgtype",
     "dhcpv6.xid",
+    "udp.srcport",
+    "udp.dstport",
 )
 CAPTURE_FIELD_COUNT = len(CAPTURE_FIELDS)
 FIELD_DHCP_MESSAGE_TYPE = 17
@@ -64,6 +66,16 @@ def _normalize_mac(value: str) -> str:
 
 def _is_true(value: str) -> bool:
     return value.strip().casefold() in {"1", "true", "yes"}
+
+
+def _normalize_dns_answers(*values: str) -> str:
+    answers = {
+        answer.strip().casefold()
+        for value in values
+        for answer in value.split(",")
+        if answer.strip()
+    }
+    return ",".join(sorted(answers))
 
 
 class SpoofingDetector:
@@ -102,6 +114,7 @@ class SpoofingDetector:
         attacker_mac: str,
         spoofed_ip: str,
         evidence: str,
+        evidence_details: dict[str, str],
         now: float,
     ) -> dict[str, Any] | None:
         fingerprint = (alert_type, attacker_mac.casefold(), spoofed_ip.casefold())
@@ -116,12 +129,14 @@ class SpoofingDetector:
             "spoofed_ip": spoofed_ip or "UNKNOWN",
             "packet_count": 1,
             "evidence_summary": evidence,
+            "evidence_details": evidence_details,
         }
 
     def analyze(
         self,
         capture_record: str,
         baseline: list[dict[str, Any]],
+        capture_source: str = "TShark",
     ) -> list[dict[str, Any]]:
         fields = capture_record.rstrip("\r\n").split("\t")
         if not any(fields):
@@ -136,15 +151,28 @@ class SpoofingDetector:
         arp_src_mac = _normalize_mac(fields[7])
         dns_query = fields[10].rstrip(".").casefold()
         dns_response = _is_true(fields[11])
-        dns_answer = ",".join(filter(None, (fields[12], fields[FIELD_DNS_AAAA])))
+        dns_answer = _normalize_dns_answers(fields[12], fields[FIELD_DNS_AAAA])
         ip_src = fields[13] or fields[15] or arp_src_ip
         dns_id = fields[20] if len(fields) > 20 else ""
+        udp_ports = {fields[31], fields[32]}
+        is_mdns = "mdns" in protocols or "5353" in udp_ports
+        is_llmnr = "llmnr" in protocols or "5355" in udp_ports
+        local_protocol = "llmnr" if is_llmnr else "mdns" if is_mdns else None
+        packet_details = {
+            "capture_source": capture_source,
+            **dict(zip(CAPTURE_FIELDS, fields)),
+        }
 
         baseline_by_ip = {
             str(entry["ip_address"]): _normalize_mac(str(entry["mac_address"]))
             for entry in baseline
             if entry.get("ip_address") and entry.get("mac_address")
             and _normalize_mac(str(entry["mac_address"])) != "00:00:00:00:00:00"
+        }
+        baseline_type_by_ip = {
+            str(entry["ip_address"]): str(entry.get("device_type", "KNOWN_HOST"))
+            for entry in baseline
+            if entry.get("ip_address")
         }
         baseline_ips_by_mac: dict[str, set[str]] = {}
         for ip, mac in baseline_by_ip.items():
@@ -165,6 +193,11 @@ class SpoofingDetector:
             for entry in baseline
             if entry.get("device_type") == "DHCP_SERVER" and entry.get("ip_address")
         }
+        dhcp_server_macs = {
+            _normalize_mac(str(entry["mac_address"]))
+            for entry in baseline
+            if entry.get("device_type") == "DHCP_SERVER" and entry.get("mac_address")
+        }
         alerts: list[dict[str, Any]] = []
 
         def append_alert(
@@ -174,7 +207,15 @@ class SpoofingDetector:
             target: str,
             evidence: str,
         ) -> None:
-            alert = self._make_alert(alert_type, severity, mac, target, evidence, now)
+            alert = self._make_alert(
+                alert_type,
+                severity,
+                mac,
+                target,
+                evidence,
+                packet_details,
+                now,
+            )
             if alert:
                 alerts.append(alert)
 
@@ -183,8 +224,10 @@ class SpoofingDetector:
             expected_mac = baseline_by_ip[arp_src_ip]
             if observed_arp_mac and observed_arp_mac != expected_mac:
                 append_alert(
-                    "ARP_SPOOFING",
-                    "HIGH",
+                    "GATEWAY_SPOOFING"
+                    if baseline_type_by_ip.get(arp_src_ip) == "GATEWAY"
+                    else "ARP_SPOOFING",
+                    "HIGH" if baseline_type_by_ip.get(arp_src_ip) == "GATEWAY" else "MEDIUM",
                     eth_src or observed_arp_mac,
                     arp_src_ip,
                     f"Anuncio ARP: {arp_src_ip} se asocia a {observed_arp_mac}; "
@@ -201,22 +244,26 @@ class SpoofingDetector:
 
         if "arp" not in protocols and ip_src in baseline_by_ip and eth_src and eth_src != baseline_by_ip[ip_src]:
             expected_mac = baseline_by_ip[ip_src]
+            is_gateway = baseline_type_by_ip.get(ip_src) == "GATEWAY"
             append_alert(
-                "IP_SPOOFING",
-                "HIGH",
+                "GATEWAY_SPOOFING" if is_gateway else "IP_SPOOFING",
+                "HIGH" if is_gateway else "MEDIUM",
                 eth_src,
                 ip_src,
-                f"El tráfico que afirma proceder de {ip_src} llegó desde {eth_src}; la línea base verificada indica {expected_mac}.",
+                f"El tráfico que afirma proceder de {ip_src} llegó desde {eth_src}; "
+                f"la línea base indica {expected_mac}. Verifica la línea base y posibles interfaces "
+                "virtuales, multihoming o cambios legítimos de NIC.",
             )
             trusted_ips = baseline_ips_by_mac.get(eth_src, set())
             if trusted_ips and ip_src not in trusted_ips:
                 expected_ips = ", ".join(sorted(trusted_ips))
                 append_alert(
                     "MAC_SPOOFING",
-                    "HIGH",
+                    "MEDIUM",
                     eth_src,
                     ip_src,
-                    f"La MAC confiable asociada a {expected_ips} también se observó suplantando {ip_src}.",
+                    f"La MAC registrada para {expected_ips} también se observó con el origen IP {ip_src}. "
+                    "Esto puede deberse a multihoming o enrutamiento; verifica antes de tratarlo como suplantación.",
                 )
 
         dhcp_type = fields[FIELD_DHCP_MESSAGE_TYPE]
@@ -226,10 +273,11 @@ class SpoofingDetector:
             if dhcp_servers and dhcp_server not in dhcp_servers:
                 append_alert(
                     "DHCP_SPOOFING",
-                    "HIGH",
+                    "MEDIUM",
                     eth_src,
                     dhcp_server,
-                    f"Respuesta DHCP desde el servidor {dhcp_server}, que no está en la lista de servidores DHCP confiables.",
+                    f"Respuesta DHCP desde {dhcp_server}, que no está en la lista de servidores DHCP confiables. "
+                    "Puede ser un servidor legítimo aún no clasificado.",
                 )
             previous = self._dhcp_offers.get(transaction_id)
             if previous and previous[0] != dhcp_server and now - previous[2] <= STATE_TTL_SECONDS:
@@ -252,13 +300,14 @@ class SpoofingDetector:
         dhcpv6_type = fields[FIELD_DHCPV6_MESSAGE_TYPE]
         dhcpv6_transaction = fields[FIELD_DHCPV6_TRANSACTION_ID]
         if dhcpv6_type in {"2", "7"} and dhcpv6_transaction and eth_src:
-            if dhcp_servers and ip_src not in dhcp_servers:
+            if dhcp_server_macs and eth_src not in dhcp_server_macs:
                 append_alert(
                     "DHCPV6_SPOOFING",
-                    "HIGH",
+                    "MEDIUM",
                     eth_src,
                     ip_src,
-                    f"Respuesta DHCPv6 desde el servidor {ip_src}, que no está en la lista de servidores DHCP confiables.",
+                    f"Respuesta DHCPv6 desde la MAC {eth_src}, que no está clasificada como servidor DHCP confiable. "
+                    "La lista IPv4 de servidores no se usa para juzgar direcciones IPv6.",
                 )
             previous = self._dhcp_offers.get(f"dhcpv6:{dhcpv6_transaction}")
             if previous and previous[1] != eth_src and now - previous[2] <= STATE_TTL_SECONDS:
@@ -278,29 +327,33 @@ class SpoofingDetector:
                     now,
                 )
 
-        if "dns" in protocols and dns_response and dns_query and dns_id:
+        if "dns" in protocols and not local_protocol and dns_response and dns_query and dns_id:
             if dns_servers and ip_src not in dns_servers:
                 append_alert(
                     "DNS_SPOOFING",
-                    "HIGH",
+                    "MEDIUM",
                     eth_src,
                     dns_query,
-                    f"Respuesta DNS para {dns_query} desde {ip_src}, que no está en la línea base de servidores DNS.",
+                    f"Respuesta DNS para {dns_query} desde {ip_src}, que no está en la lista de DNS confiables. "
+                    "Verifica si se trata de un resolver legítimo, VPN o DNS alternativo.",
                 )
             transaction_key = (dns_id, dns_query, fields[14] or fields[16])
             previous = self._dns_answers.get(transaction_key)
             if (
                 previous
+                and dns_answer
                 and previous[0] != dns_answer
                 and previous[1] != eth_src
                 and now - previous[2] <= STATE_TTL_SECONDS
             ):
                 append_alert(
                     "DNS_SPOOFING",
-                    "HIGH",
+                    "MEDIUM",
                     eth_src,
                     dns_query,
-                    f"Respuestas DNS contradictorias para {dns_query}: {previous[0]} y {dns_answer}.",
+                    f"Respuestas DNS distintas para la misma consulta {dns_query}: "
+                    f"{previous[0]} y {dns_answer}. Puede ser una respuesta concurrente, balanceo "
+                    "o DNS de horizonte dividido; confirma el servidor y el contexto antes de escalar.",
                 )
             elif dns_answer:
                 self._remember(
@@ -319,18 +372,15 @@ class SpoofingDetector:
                 if previous and previous[0] != answer and now - previous[2] <= STATE_TTL_SECONDS:
                     append_alert(
                         "NBNS_SPOOFING",
-                        "HIGH",
+                        "MEDIUM",
                         eth_src,
                         name,
-                        f"Respuestas NBNS contradictorias para {name}: {previous[0]} y {answer}.",
+                        f"Respuestas NBNS distintas para {name}: {previous[0]} y {answer}. "
+                        "Puede tratarse de nombres duplicados legítimos; valida qué equipo debe responder.",
                     )
                 else:
                     self._remember(self._local_name_answers, key, (answer, eth_src, now), now)
 
-        local_protocol = next(
-            (name for name in ("llmnr", "mdns") if name in protocols),
-            None,
-        )
         if local_protocol and dns_response and dns_query and dns_answer:
             key = (dns_id, dns_query, local_protocol)
             previous = self._local_name_answers.get(key)
@@ -350,10 +400,11 @@ class SpoofingDetector:
         if icmpv6_type == "134" and gateway_macs and eth_src not in gateway_macs:
             append_alert(
                 "NDP_SPOOFING",
-                "HIGH",
+                "MEDIUM",
                 eth_src,
                 ip_src,
-                f"Router Advertisement IPv6 recibido desde {eth_src}, no asociado a ningún gateway de la línea base.",
+                f"Router Advertisement IPv6 recibido desde {eth_src}, no asociado a un gateway clasificado. "
+                "Verifica si existe un segundo router IPv6 autorizado.",
             )
         elif icmpv6_type == "134" and not gateway_macs and eth_src not in trusted_macs:
             append_alert(
@@ -371,10 +422,11 @@ class SpoofingDetector:
                 if previous and previous[0] != eth_src and now - previous[1] <= STATE_TTL_SECONDS:
                     append_alert(
                         "NDP_SPOOFING",
-                        "HIGH",
+                        "MEDIUM",
                         eth_src,
                         target,
-                        f"Anuncios Neighbor Advertisement contradictorios para {target}: {previous[0]} y {eth_src}.",
+                        f"Neighbor Advertisement contradictorios para {target}: {previous[0]} y {eth_src}. "
+                        "Verifica si hubo cambio legítimo de NIC, failover o privacidad IPv6.",
                     )
                 else:
                     self._remember(self._ipv6_neighbors, target, (eth_src, now), now)

@@ -54,10 +54,9 @@ TShark se gestiona de forma asíncrona con `QProcess`. La interfaz conserva hast
    - TShark/Npcap captura ARP, IPv4/IPv6, DNS, DHCP/DHCPv6, LLMNR, NBNS, mDNS e ICMPv6/NDP en la interfaz seleccionada.
    - El motor compara los campos observados con la tabla de confianza y busca respuestas conflictivas en la misma captura.
 4. **Detección y Alerta:**
-   - Ante discrepancias IP/MAC, servidores no incluidos en la lista confiable, respuestas contradictorias o anuncios IPv6 sospechosos, el sistema registra alertas en SQLite. El resultado depende de la visibilidad de la interfaz y de la calidad de la línea base.
+   - Ante discrepancias IP/MAC, respuestas de servidores fuera de la lista confiable, respuestas concurrentes o anuncios IPv6 no clasificados, el sistema registra señales en SQLite con los campos de TShark usados para el análisis. Las reglas de allowlist y correlación se presentan como indicios para revisión, no como prueba de ataque; los cambios legítimos de NIC, servidores redundantes, DNS round-robin/split-horizon y routers IPv6 múltiples pueden producir discrepancias.
 5. **Visualización en Dashboard:**
-   - Los datos recopilados se exponen en un dashboard con métricas de red, severidad, inventario activo, tabla ARP, tráfico sospechoso y timeline de alertas.
-   - El dashboard se actualiza desde la cola de eventos y la base de datos para ofrecer una vista continua del estado de seguridad.
+   - El dashboard consulta métricas agregadas y alertas recientes desde SQLite. Al hacer clic en una fila se muestran los metadatos de la alerta y los campos capturados del paquete, sin payload de aplicación.
 6. **Análisis Forense y Tráfico:**
    - El usuario puede abrir una vista de paquetes con filtros de protocolo, IP o MAC utilizando TShark/Wireshark.
    - Se habilitan capturas de archivo PCAP para inspección offline con PyShark y revisión de flujo real del incidente.
@@ -98,6 +97,15 @@ Persistencia en SQLite / evidencias
         +--> Visualizador de tráfico (TShark/PyShark)
         +--> Reportes forenses y auditoría
 ```
+
+### 5.4 Cobertura y cautelas de las reglas
+- `GATEWAY_SPOOFING`: discrepancia con una IP clasificada explícitamente como gateway; severidad alta.
+- `ARP_SPOOFING`, `IP_SPOOFING` y `MAC_SPOOFING`: conflictos con pares IP/MAC de la línea base; se muestran como indicios de revisión porque la línea base puede estar obsoleta o el dispositivo puede ser multihomed/virtual.
+- `DNS_SPOOFING`: respuesta de un resolver no incluido en los DNS confiables o respuestas concurrentes distintas; severidad media y requiere comprobar resolvers alternativos, DNS de horizonte dividido y balanceo.
+- `DHCP_SPOOFING` y `DHCPV6_SPOOFING`: servidor no clasificado o respuestas de distintos servidores para una transacción; varios servidores pueden ser legítimos. DHCPv6 se compara por MAC clasificada, no contra direcciones IPv4.
+- `LLMNR_SPOOFING`, `NBNS_SPOOFING`, `MDNS_SPOOFING` y `NDP_SPOOFING`: respuestas o anuncios contradictorios/no clasificados para validación; no son confirmación por sí solos.
+- `MULTIPLE_IPS_PER_MAC` y `ARP_BURST_UNSOLICITED` están reservados en el esquema, pero no tienen reglas de detección implementadas actualmente.
+- La detección requiere que TShark exponga los campos y que la interfaz reciba los paquetes. Los tipos y campos ausentes, el filtro, la visibilidad de switch/Wi-Fi y una línea base incompleta reducen la cobertura.
 
 ---
 
