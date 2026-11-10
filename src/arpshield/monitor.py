@@ -7,11 +7,14 @@ from typing import Any
 
 from .config import is_valid_ipv4, is_valid_mac
 from .database import DatabaseManager
+from .detection import SpoofingDetector
 
 
 class ThreatMonitor:
     def __init__(self, database: DatabaseManager):
         self.database = database
+        self.detector = SpoofingDetector()
+        self._trusted_baseline = self.database.list_baseline()
 
     @staticmethod
     def _decode_command_output(raw_output: bytes | str | None) -> str:
@@ -27,7 +30,19 @@ class ThreatMonitor:
 
     def refresh_baseline(self) -> list[dict[str, Any]]:
         discovered = self.discover_local_network()
+        trusted_by_ip = {entry["ip_address"]: entry for entry in self.reload_baseline()}
         for item in discovered:
+            existing = trusted_by_ip.get(item["ip_address"])
+            if existing:
+                if existing["mac_address"].upper() != item["mac_address"].upper():
+                    self.database.add_audit_event(
+                        "baseline_conflict",
+                        f"Se observó una MAC distinta para {item['ip_address']}; se conservó la línea base confiable.",
+                        "local-monitor",
+                    )
+                continue
+            if item["mac_address"] == "00:00:00:00:00:00":
+                continue
             self.database.add_baseline_entry(
                 ip_address=item["ip_address"],
                 mac_address=item["mac_address"],
@@ -35,11 +50,15 @@ class ThreatMonitor:
                 hostname=item.get("hostname"),
             )
             self.database.add_audit_event(
-                "baseline_refresh",
-                f"Actualizada línea base para {item['ip_address']}",
+                "baseline_entry_added",
+                f"Se agregó {item['ip_address']} a la línea base; verifica el dispositivo antes de confiar en él.",
                 "local-monitor",
             )
-        return self.database.list_baseline()
+        return self.reload_baseline()
+
+    def reload_baseline(self) -> list[dict[str, Any]]:
+        self._trusted_baseline = self.database.list_baseline()
+        return self._trusted_baseline
 
     def discover_local_network(self) -> list[dict[str, Any]]:
         entries: list[dict[str, Any]] = []
@@ -103,7 +122,7 @@ class ThreatMonitor:
 
     def check_for_anomalies(self) -> list[dict[str, Any]]:
         observed = self.discover_local_network()
-        baseline = self.database.list_baseline()
+        baseline = self.reload_baseline()
         baseline_index = {entry["ip_address"]: entry for entry in baseline}
         alerts: list[dict[str, Any]] = []
 
@@ -111,7 +130,11 @@ class ThreatMonitor:
             recorded = baseline_index.get(item["ip_address"])
             if recorded and recorded["mac_address"].upper() != item["mac_address"].upper():
                 alert = {
-                    "alert_type": "GATEWAY_SPOOFING",
+                    "alert_type": (
+                        "GATEWAY_SPOOFING"
+                        if recorded.get("device_type") == "GATEWAY"
+                        else "ARP_SPOOFING"
+                    ),
                     "severity": "HIGH",
                     "attacker_mac": item["mac_address"].upper(),
                     "spoofed_ip": item["ip_address"],
@@ -120,4 +143,10 @@ class ThreatMonitor:
                 }
                 alerts.append(alert)
                 self.database.add_alert(**alert)
+        return alerts
+
+    def analyze_capture_record(self, capture_record: str) -> list[dict[str, Any]]:
+        alerts = self.detector.analyze(capture_record, self._trusted_baseline)
+        for alert in alerts:
+            self.database.add_alert(**alert)
         return alerts

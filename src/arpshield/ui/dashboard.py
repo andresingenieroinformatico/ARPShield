@@ -288,6 +288,15 @@ class DashboardPanel(QWidget):
             "MULTIPLE_IPS_PER_MAC": "Múltiples IP por MAC",
             "ARP_BURST_UNSOLICITED": "Ráfaga ARP",
             "DNS_SPOOFING": "Suplantación DNS",
+            "ARP_SPOOFING": "Suplantación ARP",
+            "IP_SPOOFING": "Suplantación IP",
+            "MAC_SPOOFING": "Suplantación MAC",
+            "DHCP_SPOOFING": "Suplantación DHCP",
+            "LLMNR_SPOOFING": "Suplantación LLMNR",
+            "NBNS_SPOOFING": "Suplantación NBNS",
+            "MDNS_SPOOFING": "Suplantación mDNS",
+            "NDP_SPOOFING": "Suplantación NDP/IPv6",
+            "DHCPV6_SPOOFING": "Suplantación DHCPv6",
         }
         colors = TypeBreakdown.COLORS
         categories = [

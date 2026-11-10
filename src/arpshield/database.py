@@ -5,13 +5,33 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
+ALERT_TYPES = (
+    "GATEWAY_SPOOFING",
+    "MULTIPLE_IPS_PER_MAC",
+    "ARP_BURST_UNSOLICITED",
+    "DNS_SPOOFING",
+    "ARP_SPOOFING",
+    "IP_SPOOFING",
+    "MAC_SPOOFING",
+    "DHCP_SPOOFING",
+    "LLMNR_SPOOFING",
+    "NBNS_SPOOFING",
+    "MDNS_SPOOFING",
+    "NDP_SPOOFING",
+    "DHCPV6_SPOOFING",
+)
+DEVICE_TYPES = ("GATEWAY", "DNS_SERVER", "DHCP_SERVER", "KNOWN_HOST", "OTHER")
+
+
 class DatabaseManager:
+    ALERT_TYPES_SQL = ", ".join(f"'{alert_type}'" for alert_type in ALERT_TYPES)
+    DEVICE_TYPES_SQL = ", ".join(f"'{device_type}'" for device_type in DEVICE_TYPES)
     CREATE_TABLES = """
     CREATE TABLE IF NOT EXISTS trusted_baseline (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         ip_address TEXT NOT NULL UNIQUE,
         mac_address TEXT NOT NULL,
-        device_type TEXT CHECK(device_type IN ('GATEWAY', 'DNS_SERVER', 'KNOWN_HOST', 'OTHER')) NOT NULL,
+        device_type TEXT CHECK(device_type IN ({device_types})) NOT NULL,
         hostname TEXT,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -25,7 +45,7 @@ class DatabaseManager:
     CREATE TABLE IF NOT EXISTS security_alerts (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         timestamp_utc DATETIME DEFAULT CURRENT_TIMESTAMP,
-        alert_type TEXT CHECK(alert_type IN ('GATEWAY_SPOOFING', 'MULTIPLE_IPS_PER_MAC', 'ARP_BURST_UNSOLICITED', 'DNS_SPOOFING')) NOT NULL,
+        alert_type TEXT CHECK(alert_type IN ({alert_types})) NOT NULL,
         severity TEXT CHECK(severity IN ('LOW', 'MEDIUM', 'HIGH', 'CRITICAL')) NOT NULL,
         attacker_mac TEXT NOT NULL,
         spoofed_ip TEXT NOT NULL,
@@ -45,7 +65,7 @@ class DatabaseManager:
     CREATE INDEX IF NOT EXISTS idx_baseline_ip ON trusted_baseline(ip_address);
     CREATE INDEX IF NOT EXISTS idx_alerts_timestamp ON security_alerts(timestamp_utc);
     CREATE INDEX IF NOT EXISTS idx_alerts_attacker ON security_alerts(attacker_mac);
-    """
+    """.format(alert_types=ALERT_TYPES_SQL, device_types=DEVICE_TYPES_SQL)
 
     def __init__(self, db_path: str | Path):
         self.db_path = Path(db_path)
@@ -61,8 +81,99 @@ class DatabaseManager:
         connection = self.connect()
         try:
             connection.executescript(self.CREATE_TABLES)
+            self._migrate_device_types(connection)
+            self._migrate_alert_types(connection)
         finally:
             connection.close()
+
+    def _migrate_device_types(self, connection: sqlite3.Connection) -> None:
+        row = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='trusted_baseline'"
+        ).fetchone()
+        table_sql = row["sql"] if row else ""
+        if all(device_type in table_sql for device_type in DEVICE_TYPES):
+            return
+
+        connection.execute("BEGIN")
+        try:
+            connection.execute(
+                f"""
+                CREATE TABLE trusted_baseline_migrated (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ip_address TEXT NOT NULL UNIQUE,
+                    mac_address TEXT NOT NULL,
+                    device_type TEXT CHECK(device_type IN ({self.DEVICE_TYPES_SQL})) NOT NULL,
+                    hostname TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO trusted_baseline_migrated (
+                    id, ip_address, mac_address, device_type, hostname, created_at, updated_at
+                )
+                SELECT id, ip_address, mac_address, device_type, hostname, created_at, updated_at
+                FROM trusted_baseline
+                """
+            )
+            connection.execute("DROP TABLE trusted_baseline")
+            connection.execute("ALTER TABLE trusted_baseline_migrated RENAME TO trusted_baseline")
+            connection.execute("CREATE INDEX IF NOT EXISTS idx_baseline_ip ON trusted_baseline(ip_address)")
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+
+    def _migrate_alert_types(self, connection: sqlite3.Connection) -> None:
+        row = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='security_alerts'"
+        ).fetchone()
+        table_sql = row["sql"] if row else ""
+        if all(alert_type in table_sql for alert_type in ALERT_TYPES):
+            return
+
+        connection.execute("BEGIN")
+        try:
+            connection.execute(
+                f"""
+                CREATE TABLE security_alerts_migrated (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp_utc DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    alert_type TEXT CHECK(alert_type IN ({self.ALERT_TYPES_SQL})) NOT NULL,
+                    severity TEXT CHECK(severity IN ('LOW', 'MEDIUM', 'HIGH', 'CRITICAL')) NOT NULL,
+                    attacker_mac TEXT NOT NULL,
+                    spoofed_ip TEXT NOT NULL,
+                    packet_count INTEGER DEFAULT 1,
+                    evidence_summary TEXT NOT NULL,
+                    mitigation_applied INTEGER DEFAULT 0
+                )
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO security_alerts_migrated (
+                    id, timestamp_utc, alert_type, severity, attacker_mac,
+                    spoofed_ip, packet_count, evidence_summary, mitigation_applied
+                )
+                SELECT id, timestamp_utc, alert_type, severity, attacker_mac,
+                       spoofed_ip, packet_count, evidence_summary, mitigation_applied
+                FROM security_alerts
+                """
+            )
+            connection.execute("DROP TABLE security_alerts")
+            connection.execute("ALTER TABLE security_alerts_migrated RENAME TO security_alerts")
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_alerts_timestamp ON security_alerts(timestamp_utc)"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_alerts_attacker ON security_alerts(attacker_mac)"
+            )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
 
     def add_baseline_entry(
         self,
@@ -85,6 +196,26 @@ class DatabaseManager:
                 """,
                 (ip_address, mac_address, device_type, hostname),
             )
+            connection.commit()
+        finally:
+            connection.close()
+
+    def set_baseline_device_type(self, ip_address: str, device_type: str) -> None:
+        if device_type not in DEVICE_TYPES:
+            raise ValueError(f"Tipo de dispositivo no compatible: {device_type}")
+
+        connection = self.connect()
+        try:
+            cursor = connection.execute(
+                """
+                UPDATE trusted_baseline
+                SET device_type = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE ip_address = ?
+                """,
+                (device_type, ip_address),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError(f"No existe la dirección IP en la línea base: {ip_address}")
             connection.commit()
         finally:
             connection.close()
@@ -159,18 +290,13 @@ class DatabaseManager:
                 SELECT
                     COUNT(*) AS alert_count,
                     COALESCE(SUM(CASE WHEN severity IN ('HIGH', 'CRITICAL') THEN 1 ELSE 0 END), 0)
-                        AS high_severity_count,
-                    COALESCE(SUM(CASE WHEN alert_type = 'GATEWAY_SPOOFING' THEN 1 ELSE 0 END), 0)
-                        AS gateway_spoofing_count,
-                    COALESCE(SUM(CASE WHEN alert_type = 'MULTIPLE_IPS_PER_MAC' THEN 1 ELSE 0 END), 0)
-                        AS multiple_ips_count,
-                    COALESCE(SUM(CASE WHEN alert_type = 'ARP_BURST_UNSOLICITED' THEN 1 ELSE 0 END), 0)
-                        AS arp_burst_count,
-                    COALESCE(SUM(CASE WHEN alert_type = 'DNS_SPOOFING' THEN 1 ELSE 0 END), 0)
-                        AS dns_spoofing_count
+                        AS high_severity_count
                 FROM security_alerts
                 """
             ).fetchone()
+            alert_type_counts = connection.execute(
+                "SELECT alert_type, COUNT(*) AS count FROM security_alerts GROUP BY alert_type"
+            ).fetchall()
             daily_counts = connection.execute(
                 """
                 SELECT date(timestamp_utc) AS alert_date, COUNT(*) AS count
@@ -193,10 +319,7 @@ class DatabaseManager:
                 "alert_count": summary["alert_count"],
                 "high_severity_count": summary["high_severity_count"],
                 "alert_type_counts": [
-                    ("GATEWAY_SPOOFING", summary["gateway_spoofing_count"]),
-                    ("MULTIPLE_IPS_PER_MAC", summary["multiple_ips_count"]),
-                    ("ARP_BURST_UNSOLICITED", summary["arp_burst_count"]),
-                    ("DNS_SPOOFING", summary["dns_spoofing_count"]),
+                    (row["alert_type"], row["count"]) for row in alert_type_counts
                 ],
                 "daily_counts": {row["alert_date"]: row["count"] for row in daily_counts},
                 "recent_alerts": [dict(row) for row in recent_alerts],
