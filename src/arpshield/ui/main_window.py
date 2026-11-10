@@ -29,6 +29,25 @@ except ModuleNotFoundError:  # pragma: no cover - dependency message handled at 
     Qt = None
 
 
+DEVICE_TYPE_LABELS = {
+    "GATEWAY": "Gateway / router",
+    "DNS_SERVER": "Servidor DNS",
+    "DHCP_SERVER": "Servidor DHCP",
+    "KNOWN_HOST": "Equipo conocido",
+    "OTHER": "Otro dispositivo",
+}
+
+
+def trusted_device_label(entry: dict[str, object]) -> str:
+    hostname = str(entry.get("hostname") or "").strip()
+    device_type = str(entry.get("device_type") or "OTHER")
+    role_label = DEVICE_TYPE_LABELS.get(device_type, device_type.replace("_", " ").title())
+    display_name = hostname or f"{role_label} (sin nombre)"
+    ip_address = str(entry.get("ip_address") or "IP desconocida")
+    mac_address = str(entry.get("mac_address") or "MAC desconocida")
+    return f"{display_name}  ·  IP {ip_address}  ·  MAC {mac_address}"
+
+
 if QApplication is None:
     class MainWindow:
         def __init__(self, monitor: ThreatMonitor):
@@ -186,7 +205,20 @@ else:
                 ("OTHER", "Otro"),
             ):
                 self.trusted_role_combo.addItem(label, role)
-            self.save_trusted_role_button = QPushButton("Guardar rol confiable")
+            self.trusted_device_info = QLabel("Selecciona un dispositivo para ver sus datos.")
+            self.trusted_device_info.setTextFormat(Qt.TextFormat.PlainText)
+            self.trusted_device_info.setWordWrap(True)
+            self.trusted_device_info.setStyleSheet(
+                f"color: {TEXT}; background: {PANEL}; padding: 12px; border-radius: 8px;"
+            )
+            device_name_label = QLabel("Nombre o alias para reconocerlo")
+            device_name_label.setStyleSheet("font-weight: 600;")
+            self.trusted_name_input = QLineEdit()
+            self.trusted_name_input.setMaxLength(120)
+            self.trusted_name_input.setPlaceholderText(
+                "Ej.: Router principal, Impresora recepción o Portátil de Ana"
+            )
+            self.save_trusted_role_button = QPushButton("Guardar nombre y rol")
             self.save_trusted_role_button.setEnabled(False)
             self.save_trusted_role_button.clicked.connect(self._save_trusted_role)
             self.trusted_device_combo.currentIndexChanged.connect(self._select_trusted_device_role)
@@ -198,6 +230,9 @@ else:
             role_layout.addWidget(self.save_trusted_role_button)
             layout.addWidget(trusted_title)
             layout.addWidget(trusted_description)
+            layout.addWidget(self.trusted_device_info)
+            layout.addWidget(device_name_label)
+            layout.addWidget(self.trusted_name_input)
             layout.addLayout(role_layout)
             layout.addStretch()
             return page
@@ -206,18 +241,34 @@ else:
             entries = self.monitor.database.list_baseline()
             self.trusted_device_combo.clear()
             for entry in entries:
-                label = f"{entry['ip_address']}  ·  {entry['mac_address']}"
+                label = trusted_device_label(entry)
                 self.trusted_device_combo.addItem(label, entry)
+                self.trusted_device_combo.setItemData(
+                    self.trusted_device_combo.count() - 1,
+                    label,
+                    Qt.ItemDataRole.ToolTipRole,
+                )
             self.save_trusted_role_button.setEnabled(bool(entries))
             self._select_trusted_device_role()
 
         def _select_trusted_device_role(self, *_args) -> None:
             entry = self.trusted_device_combo.currentData()
             if not entry:
+                self.trusted_name_input.clear()
+                self.trusted_device_info.setText("No hay dispositivos en la línea base. Escanea la red primero.")
                 return
             role_index = self.trusted_role_combo.findData(entry["device_type"])
             if role_index >= 0:
                 self.trusted_role_combo.setCurrentIndex(role_index)
+            hostname = str(entry.get("hostname") or "").strip()
+            role_label = DEVICE_TYPE_LABELS.get(entry["device_type"], "Otro dispositivo")
+            self.trusted_name_input.setText(hostname)
+            self.trusted_device_info.setText(
+                f"Nombre: {hostname or 'Sin nombre asignado'}\n"
+                f"Tipo: {role_label}\n"
+                f"Dirección IP: {entry['ip_address']}\n"
+                f"Dirección MAC: {entry['mac_address']}"
+            )
 
         def _save_trusted_role(self) -> None:
             entry = self.trusted_device_combo.currentData()
@@ -225,15 +276,19 @@ else:
             if not entry or not role:
                 return
             role_label = self.trusted_role_combo.currentText()
+            hostname = self.trusted_name_input.text().strip() or None
             try:
-                self.monitor.database.set_baseline_device_type(entry["ip_address"], role)
+                self.monitor.database.update_baseline_device(entry["ip_address"], role, hostname)
                 self.monitor.reload_baseline()
             except (OSError, sqlite3.Error, ValueError) as exc:
-                QMessageBox.warning(self, "Línea base", f"No se pudo guardar el rol: {exc}")
+                QMessageBox.warning(self, "Línea base", f"No se pudo guardar el nombre y rol: {exc}")
                 return
             self._refresh_trusted_devices()
             self._refresh_visible_dashboard()
-            self.status_label.setText(f"●  Rol {role_label} guardado para {entry['ip_address']}")
+            display_name = hostname or role_label
+            self.status_label.setText(
+                f"●  {display_name} guardado como {role_label} para {entry['ip_address']}"
+            )
 
         def _show_page(self, index: int, breadcrumb: str) -> None:
             self.pages.setCurrentIndex(index)

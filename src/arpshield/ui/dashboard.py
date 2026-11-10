@@ -8,12 +8,12 @@ try:
     from PySide6.QtCore import QPointF, QRectF, Qt
     from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPolygonF
     from PySide6.QtWidgets import (
+        QDialog,
+        QDialogButtonBox,
         QFrame,
         QGridLayout,
         QHeaderView,
         QLabel,
-        QDialog,
-        QDialogButtonBox,
         QPlainTextEdit,
         QTableWidget,
         QTableWidgetItem,
