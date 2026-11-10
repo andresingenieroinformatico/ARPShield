@@ -445,7 +445,7 @@ else:
 
             display_filter = self.filter_input.text().strip() or DEFAULT_CAPTURE_FILTER
             self._mode = "file"
-            self._capture_source = "Archivo PCAP/PCAPNG"
+            self._capture_source = f"Archivo PCAP/PCAPNG: {Path(path).name}"
             self._stdout_buffer = ""
             self._pending_rows.clear()
             self._detected_alert_count = 0

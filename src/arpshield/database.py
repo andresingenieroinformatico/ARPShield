@@ -240,6 +240,34 @@ class DatabaseManager:
         finally:
             connection.close()
 
+    def update_baseline_device(
+        self,
+        ip_address: str,
+        device_type: str,
+        hostname: str | None,
+    ) -> None:
+        if device_type not in DEVICE_TYPES:
+            raise ValueError(f"Tipo de dispositivo no compatible: {device_type}")
+        normalized_hostname = hostname.strip() if hostname else None
+        if normalized_hostname and len(normalized_hostname) > 120:
+            raise ValueError("El nombre del dispositivo no puede superar 120 caracteres")
+
+        connection = self.connect()
+        try:
+            cursor = connection.execute(
+                """
+                UPDATE trusted_baseline
+                SET device_type = ?, hostname = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE ip_address = ?
+                """,
+                (device_type, normalized_hostname or None, ip_address),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError(f"No existe la dirección IP en la línea base: {ip_address}")
+            connection.commit()
+        finally:
+            connection.close()
+
     def add_alert(
         self,
         alert_type: str,

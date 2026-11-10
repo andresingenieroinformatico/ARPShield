@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS security_alerts (
     spoofed_ip TEXT NOT NULL,
     packet_count INTEGER DEFAULT 1,
     evidence_summary TEXT NOT NULL,
+    evidence_details TEXT NOT NULL DEFAULT '{}',
     mitigation_applied INTEGER DEFAULT 0 -- 0: No aplicada, 1: Estática netsh aplicada
 );
 
@@ -84,6 +85,7 @@ CREATE INDEX IF NOT EXISTS idx_alerts_attacker ON security_alerts(attacker_mac);
 | `spoofed_ip` | TEXT | NO | Dirección IP objetivo de la suplantación (ej. IP del router). |
 | `packet_count` | INTEGER | NO | Número total de tramas maliciosas detectadas en la ráfaga. |
 | `evidence_summary` | TEXT | NO | Detalle forense estructurado (ej. "MAC XX:XX pretendía ser Gateway 192.168.1.1"). |
+| `evidence_details` | TEXT | NO | Objeto JSON con campos del paquete entregados por TShark y la fuente de captura; no incluye payload de aplicación. |
 | `mitigation_applied`| INTEGER | NO | Indicador binario (0 = Inactivo, 1 = Entrada estática aplicada vía `netsh`). |
 
 ---
