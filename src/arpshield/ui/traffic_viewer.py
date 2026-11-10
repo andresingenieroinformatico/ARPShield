@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+<<<<<<< HEAD
 from collections import deque
+=======
+import json
+>>>>>>> 898312d13b0cf96c1706855d245871643442861a
 import os
 import re
 import shutil
@@ -77,6 +81,14 @@ PACKET_BATCH_SIZE = 50
 >>>>>>> 4551bfa7299551eff2751d0ecb43c9b37412521b
 PACKET_COLUMNS = ["Hora", "N.º", "Protocolo", "IP origen", "IP destino", "MAC origen", "MAC destino", "Información"]
 DEFAULT_CAPTURE_FILTER = "arp or dns or dhcp or dhcpv6 or bootp or llmnr or nbns or mdns or icmpv6"
+UNSUPPORTED_EXTCAP_INTERFACES = {
+    "ciscodump",
+    "etwdump",
+    "randpkt",
+    "sshdump",
+    "udpdump",
+    "wifidump",
+}
 
 
 def find_tshark() -> str | None:
@@ -103,6 +115,70 @@ def parse_interfaces(output: str) -> list[tuple[str, str]]:
         if match:
             interfaces.append((match.group(1), match.group(2)))
     return interfaces
+
+
+def capture_interface_target(interface_name: str) -> str | None:
+    name = interface_name.strip()
+    if not name:
+        return None
+    target = name.split(maxsplit=1)[0]
+    if target.casefold() in UNSUPPORTED_EXTCAP_INTERFACES:
+        return None
+    return target
+
+
+def parse_physical_adapters(output: str) -> dict[str, dict[str, str]]:
+    if not output.strip():
+        return {}
+    payload = json.loads(output)
+    if isinstance(payload, dict):
+        payload = [payload]
+    adapters: dict[str, dict[str, str]] = {}
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        guid = str(item.get("InterfaceGuid", "")).strip("{}").casefold()
+        name = str(item.get("Name", "")).strip()
+        if guid and name:
+            adapters[guid] = {
+                "name": name,
+                "status": str(item.get("Status", "Unknown")),
+            }
+    return adapters
+
+
+def windows_physical_adapters() -> dict[str, dict[str, str]]:
+    if os.name != "nt":
+        return {}
+    result = subprocess.run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "Get-NetAdapter -Physical | "
+            "Select-Object Name, Status, InterfaceGuid | ConvertTo-Json -Compress",
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        shell=False,
+        check=False,
+        timeout=10,
+    )
+    if result.returncode != 0:
+        details = result.stderr.strip() or "Get-NetAdapter terminó con error."
+        raise RuntimeError(f"No se pudieron consultar los adaptadores físicos: {details}")
+    try:
+        return parse_physical_adapters(result.stdout)
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise RuntimeError("Windows devolvió una lista de adaptadores físicos no válida.") from exc
+
+
+def interface_guid(capture_target: str) -> str | None:
+    match = re.search(r"\{([0-9a-fA-F-]{36})\}", capture_target)
+    return match.group(1).casefold() if match else None
 
 
 def packet_fields_to_row(line: str) -> list[str] | None:
@@ -178,6 +254,8 @@ else:
             self._pending_rows: list[list[str]] = []
             self._detected_alert_count = 0
             self._detection_persistence_error = False
+            self._capture_stderr = ""
+            self._captured_record_count = 0
             self.process = QProcess(self)
             self.process.readyReadStandardOutput.connect(self._read_output)
             self.process.readyReadStandardError.connect(self._read_error)
@@ -186,7 +264,13 @@ else:
             self._flush_timer = QTimer(self)
             self._flush_timer.setInterval(200)
             self._flush_timer.timeout.connect(self._flush_pending_rows)
+<<<<<<< HEAD
 >>>>>>> 4551bfa7299551eff2751d0ecb43c9b37412521b
+=======
+            self._capture_watchdog = QTimer(self)
+            self._capture_watchdog.setInterval(5000)
+            self._capture_watchdog.timeout.connect(self._report_no_packets)
+>>>>>>> 898312d13b0cf96c1706855d245871643442861a
 
 <<<<<<< HEAD
         self.process = QProcess(self)
@@ -202,7 +286,7 @@ else:
             controls.setSpacing(9)
             self.interface_combo = QComboBox()
             self.filter_input = QLineEdit(DEFAULT_CAPTURE_FILTER)
-            self.filter_input.setPlaceholderText("Filtro de captura (ej. arp or dns)")
+            self.filter_input.setPlaceholderText("Filtro Wireshark (ej. arp or dns)")
             self.refresh_button = QPushButton("Detectar interfaces")
             self.start_button = QPushButton("Iniciar captura")
             self.stop_button = QPushButton("Detener")
@@ -324,13 +408,42 @@ else:
                 self.start_button.setEnabled(False)
                 return
 
+            try:
+                physical_adapters = windows_physical_adapters()
+            except (OSError, subprocess.TimeoutExpired, RuntimeError) as exc:
+                self.status_label.setText(f"No se pudieron verificar los adaptadores físicos de Windows: {exc}")
+                self.start_button.setEnabled(False)
+                return
+
             for interface_id, name in interfaces:
-                self.interface_combo.addItem(f"{interface_id}. {name}", interface_id)
-            self.start_button.setEnabled(bool(interfaces))
-            if interfaces:
-                self.status_label.setText(f"TShark listo: {len(interfaces)} interfaces disponibles. Captura detenida.")
+                target = capture_interface_target(name)
+                if target:
+                    guid = interface_guid(target)
+                    adapter = physical_adapters.get(guid or "")
+                    if os.name == "nt" and not adapter:
+                        continue
+                    if adapter:
+                        status = adapter["status"]
+                        label = f"{interface_id}. {adapter['name']} · {status} · {name}"
+                        self.interface_combo.addItem(label, target)
+                        self.interface_combo.setItemData(
+                            self.interface_combo.count() - 1,
+                            status,
+                            Qt.ItemDataRole.UserRole + 1,
+                        )
+                    else:
+                        self.interface_combo.addItem(f"{interface_id}. {name}", target)
+            self.start_button.setEnabled(self.interface_combo.count() > 0)
+            if self.interface_combo.count():
+                self.status_label.setText(
+                    f"TShark listo: {self.interface_combo.count()} adaptadores físicos disponibles. "
+                    "Selecciona el que está conectado a la red."
+                )
             else:
-                self.status_label.setText("TShark está instalado, pero no hay interfaces de captura disponibles.")
+                self.status_label.setText(
+                    "No se encontró un adaptador físico asociado a Npcap. Comprueba que Ethernet/Wi-Fi "
+                    "esté habilitado, tenga controlador y aparezca en la lista de interfaces de TShark."
+                )
 
         def start_capture(self) -> None:
             if self.process.state() != QProcess.ProcessState.NotRunning:
@@ -339,19 +452,36 @@ else:
                 self.status_label.setText("Selecciona una interfaz de captura válida.")
                 return
 
-            interface_id = self.interface_combo.currentData()
+            interface_name = self.interface_combo.currentData()
+            if not interface_name:
+                self.status_label.setText("La interfaz seleccionada no es una fuente de captura local.")
+                return
+            adapter_status = self.interface_combo.currentData(Qt.ItemDataRole.UserRole + 1)
+            if adapter_status and adapter_status.casefold() != "up":
+                self.status_label.setText(
+                    f"El adaptador seleccionado está {adapter_status}; conéctalo a la red antes de capturar."
+                )
+                return
             display_filter = self.filter_input.text().strip() or DEFAULT_CAPTURE_FILTER
-            arguments = self._packet_arguments(display_filter)
-            arguments[2:2] = ["-i", str(interface_id)]
+            arguments = self._live_capture_arguments(interface_name, display_filter)
             self._mode = "live"
             self._stdout_buffer = ""
             self._pending_rows.clear()
             self._detected_alert_count = 0
             self._detection_persistence_error = False
+            self._capture_stderr = ""
+            self._captured_record_count = 0
             self.packet_table.setRowCount(0)
             self._set_running(True)
-            self.status_label.setText(f"Capturando en {self.interface_combo.currentText()} · filtro: {display_filter}")
+            self.status_label.setText(
+                f"Capturando en {self.interface_combo.currentText()} · filtro: {display_filter}. "
+                "Se observa el tráfico visible para este adaptador."
+            )
             self.process.start(self.tshark_path, arguments)
+
+        @classmethod
+        def _live_capture_arguments(cls, interface_name: str, display_filter: str) -> list[str]:
+            return ["-i", interface_name, *cls._packet_arguments(display_filter)]
 
         @staticmethod
         def _packet_arguments(display_filter: str) -> list[str]:
@@ -428,6 +558,8 @@ else:
             self._pending_rows.clear()
             self._detected_alert_count = 0
             self._detection_persistence_error = False
+            self._capture_stderr = ""
+            self._captured_record_count = 0
             self.packet_table.setRowCount(0)
             fields = self._packet_arguments(display_filter)
             fields = fields[fields.index("-T") :]
@@ -445,6 +577,8 @@ else:
             if lines and not lines[-1].endswith(("\n", "\r")):
                 self._stdout_buffer = lines.pop()
             for line in lines:
+                if self._mode == "live":
+                    self._captured_record_count += 1
                 self._analyze_capture_record(line)
                 row = packet_fields_to_row(line)
                 if row:
@@ -493,6 +627,7 @@ else:
             self.packet_table.scrollToBottom()
 >>>>>>> 4551bfa7299551eff2751d0ecb43c9b37412521b
 
+<<<<<<< HEAD
     @staticmethod
     def _live_capture_filter(display_filter: str) -> str | None:
         """Mapea filtros comunes de visualización a filtros BPF de captura (Npcap) para descartar tráfico pesado en kernel."""
@@ -504,6 +639,12 @@ else:
             "dns": "port 53",
         }
         return bpf_map.get(normalized)
+=======
+        def _read_error(self) -> None:
+            text = bytes(self.process.readAllStandardError()).decode("utf-8", errors="replace").strip()
+            if text:
+                self._capture_stderr = f"{self._capture_stderr}\n{text}".strip()[-2000:]
+>>>>>>> 898312d13b0cf96c1706855d245871643442861a
 
     def start_capture(self) -> None:
         if self.process.state() != QProcess.ProcessState.NotRunning:
@@ -581,9 +722,11 @@ else:
             self.status_label.setText(f"Captura detenida · {self.packet_table.rowCount()} paquetes visibles.")
 =======
             if exit_code:
+                details = self._capture_stderr[-1000:]
                 self.status_label.setText(
-                    f"TShark terminó con código {exit_code}; revisa los permisos o el filtro."
+                    f"TShark terminó con código {exit_code}; revisa la interfaz, Npcap y el filtro."
                     f"{self._detection_warning()}"
+                    + (f"\n{details}" if details else "")
                 )
             elif self._mode == "file":
                 self.status_label.setText(
@@ -619,6 +762,7 @@ else:
         if not self.tshark_path:
             return
 
+<<<<<<< HEAD
 <<<<<<< HEAD
         display_filter = self.filter_input.text().strip() or "arp or dns"
         self._mode = "file"
@@ -720,11 +864,28 @@ else:
         self.stop_button.setEnabled(running and self._mode == "live")
         self.open_capture_button.setEnabled(not running)
 =======
+=======
+        def _report_no_packets(self) -> None:
+            if (
+                self._mode == "live"
+                and self.process.state() != QProcess.ProcessState.NotRunning
+                and self._captured_record_count == 0
+            ):
+                self.status_label.setText(
+                    "Captura activa, pero no llegan paquetes que coincidan con el filtro. "
+                    "Comprueba la interfaz física conectada y el filtro. Para ver tráfico de otros "
+                    "equipos en una LAN conmutada necesitas un puerto espejo/TAP."
+                )
+
+>>>>>>> 898312d13b0cf96c1706855d245871643442861a
         def _set_running(self, running: bool) -> None:
             if running:
                 self._flush_timer.start()
+                if self._mode == "live":
+                    self._capture_watchdog.start()
             else:
                 self._flush_timer.stop()
+                self._capture_watchdog.stop()
                 self._flush_pending_rows()
             self.refresh_button.setEnabled(not running)
             self.start_button.setEnabled(not running and self.interface_combo.count() > 0)

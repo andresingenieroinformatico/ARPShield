@@ -11,17 +11,19 @@ if str(SRC) not in sys.path:
 from arpshield.config import AppSettings
 from arpshield.database import DatabaseManager
 from arpshield.monitor import ThreatMonitor
-from arpshield.ui.main_window import MainWindow
-from arpshield.ui.traffic_viewer import find_tshark
 
 
 def main() -> int:
     try:
         from PySide6.QtWidgets import QApplication, QMessageBox
-    except ModuleNotFoundError as exc:  # pragma: no cover - runtime dependency message
+    except (ImportError, OSError) as exc:  # pragma: no cover - runtime dependency message
         raise SystemExit(
-            "Faltan dependencias del proyecto. Instala los requisitos con: python -m pip install -r requirements.txt"
+            "No se pudo cargar PySide6. Activa el entorno virtual del proyecto e instala los requisitos con: "
+            "python -m pip install -r requirements.txt"
         ) from exc
+
+    from arpshield.ui.main_window import MainWindow
+    from arpshield.ui.traffic_viewer import find_tshark
 
     app = QApplication(sys.argv)
     app.setApplicationName("ARPShield")
