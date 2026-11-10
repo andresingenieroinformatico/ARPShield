@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sqlite3
+
 from ..monitor import ThreatMonitor
 from .dashboard import BACKGROUND, MUTED, PANEL, TEXT, DashboardPanel
 from .traffic_viewer import TrafficViewerPanel, find_tshark
@@ -8,6 +10,7 @@ try:
     from PySide6.QtCore import Qt, QTimer
     from PySide6.QtWidgets import (
         QApplication,
+        QComboBox,
         QFrame,
         QHBoxLayout,
         QLabel,
@@ -22,7 +25,7 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - dependency message handled at runtime
     QApplication = None
     QLabel = QWidget = QMainWindow = QMessageBox = QPushButton = QHBoxLayout = QVBoxLayout = None
-    QFrame = QLineEdit = QStackedWidget = QTimer = None
+    QFrame = QLineEdit = QStackedWidget = QTimer = QComboBox = None
     Qt = None
 
 
@@ -164,8 +167,73 @@ else:
             details.setStyleSheet(f"color: {MUTED}; background: {PANEL}; padding: 18px; border-radius: 10px;")
             layout.addWidget(title)
             layout.addWidget(details)
+
+            trusted_title = QLabel("Clasificar dispositivos de confianza")
+            trusted_title.setStyleSheet("font-size: 15px; font-weight: 700;")
+            trusted_description = QLabel(
+                "Escanea la red primero y verifica de forma independiente la IP/MAC antes de asignar un rol. "
+                "Los roles Gateway, DNS y DHCP alimentan las referencias de los detectores."
+            )
+            trusted_description.setWordWrap(True)
+            trusted_description.setStyleSheet(f"color: {MUTED};")
+            self.trusted_device_combo = QComboBox()
+            self.trusted_role_combo = QComboBox()
+            for role, label in (
+                ("GATEWAY", "Gateway"),
+                ("DNS_SERVER", "Servidor DNS"),
+                ("DHCP_SERVER", "Servidor DHCP/DHCPv6"),
+                ("KNOWN_HOST", "Equipo conocido"),
+                ("OTHER", "Otro"),
+            ):
+                self.trusted_role_combo.addItem(label, role)
+            self.save_trusted_role_button = QPushButton("Guardar rol confiable")
+            self.save_trusted_role_button.setEnabled(False)
+            self.save_trusted_role_button.clicked.connect(self._save_trusted_role)
+            self.trusted_device_combo.currentIndexChanged.connect(self._select_trusted_device_role)
+            self._refresh_trusted_devices()
+
+            role_layout = QHBoxLayout()
+            role_layout.addWidget(self.trusted_device_combo, 3)
+            role_layout.addWidget(self.trusted_role_combo, 2)
+            role_layout.addWidget(self.save_trusted_role_button)
+            layout.addWidget(trusted_title)
+            layout.addWidget(trusted_description)
+            layout.addLayout(role_layout)
             layout.addStretch()
             return page
+
+        def _refresh_trusted_devices(self) -> None:
+            entries = self.monitor.database.list_baseline()
+            self.trusted_device_combo.clear()
+            for entry in entries:
+                label = f"{entry['ip_address']}  ·  {entry['mac_address']}"
+                self.trusted_device_combo.addItem(label, entry)
+            self.save_trusted_role_button.setEnabled(bool(entries))
+            self._select_trusted_device_role()
+
+        def _select_trusted_device_role(self, *_args) -> None:
+            entry = self.trusted_device_combo.currentData()
+            if not entry:
+                return
+            role_index = self.trusted_role_combo.findData(entry["device_type"])
+            if role_index >= 0:
+                self.trusted_role_combo.setCurrentIndex(role_index)
+
+        def _save_trusted_role(self) -> None:
+            entry = self.trusted_device_combo.currentData()
+            role = self.trusted_role_combo.currentData()
+            if not entry or not role:
+                return
+            role_label = self.trusted_role_combo.currentText()
+            try:
+                self.monitor.database.set_baseline_device_type(entry["ip_address"], role)
+                self.monitor.reload_baseline()
+            except (OSError, sqlite3.Error, ValueError) as exc:
+                QMessageBox.warning(self, "Línea base", f"No se pudo guardar el rol: {exc}")
+                return
+            self._refresh_trusted_devices()
+            self._refresh_visible_dashboard()
+            self.status_label.setText(f"●  Rol {role_label} guardado para {entry['ip_address']}")
 
         def _show_page(self, index: int, breadcrumb: str) -> None:
             self.pages.setCurrentIndex(index)
@@ -190,7 +258,8 @@ else:
         def scan_network(self) -> None:
             try:
                 entries = self.monitor.refresh_baseline()
-            except OSError as exc:
+                self._refresh_trusted_devices()
+            except (OSError, sqlite3.Error) as exc:
                 QMessageBox.critical(self, "Error de escaneo", f"No se pudo actualizar la línea base:\n{exc}")
                 return
             self._refresh_visible_dashboard()
@@ -199,13 +268,17 @@ else:
         def check_alerts(self) -> None:
             try:
                 alerts = self.monitor.check_for_anomalies()
-            except OSError as exc:
+            except (OSError, sqlite3.Error) as exc:
                 QMessageBox.critical(self, "Error de monitoreo", f"No se pudo comprobar la red:\n{exc}")
                 return
             self._refresh_visible_dashboard()
             if alerts:
                 self.status_label.setText(f"●  {len(alerts)} anomalías detectadas")
-                QMessageBox.information(self, "ARPShield", f"Se registraron {len(alerts)} alertas de posible suplantación ARP.")
+                QMessageBox.information(
+                    self,
+                    "ARPShield",
+                    f"Se registraron {len(alerts)} alertas por cambios sospechosos en la tabla ARP.",
+                )
             else:
                 self.status_label.setText("●  No se detectaron anomalías")
 

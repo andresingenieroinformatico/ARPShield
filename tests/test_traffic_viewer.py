@@ -7,7 +7,15 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from arpshield.ui.traffic_viewer import MAX_PACKET_ROWS, PACKET_COLUMNS, packet_fields_to_row, parse_interfaces
+from arpshield.detection import CAPTURE_FIELDS
+from arpshield.ui.traffic_viewer import (
+    DEFAULT_CAPTURE_FILTER,
+    MAX_PACKET_ROWS,
+    PACKET_COLUMNS,
+    TrafficViewerPanel,
+    packet_fields_to_row,
+    parse_interfaces,
+)
 
 
 class TrafficViewerTests(unittest.TestCase):
@@ -56,6 +64,16 @@ class TrafficViewerTests(unittest.TestCase):
 
     def test_packet_history_is_bounded_for_low_memory_systems(self):
         self.assertEqual(MAX_PACKET_ROWS, 500)
+
+    def test_capture_arguments_match_detector_field_schema(self):
+        arguments = TrafficViewerPanel._packet_arguments(DEFAULT_CAPTURE_FILTER)
+        capture_fields = [
+            arguments[index + 1]
+            for index, value in enumerate(arguments[:-1])
+            if value == "-e"
+        ]
+
+        self.assertEqual(capture_fields, list(CAPTURE_FIELDS))
 
 
 if __name__ == "__main__":

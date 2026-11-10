@@ -1,7 +1,7 @@
 # ARPShield - Documento de Arquitectura y Diseño Técnico
 
 ## 1. Visión General del Sistema
-**ARPShield** es un sistema de detección y prevención de intrusiones (IDS/IPS) enfocado en la capa de enlace (Capa 2) y resolución de nombres (Capa 3). Su objetivo es proteger equipos cliente en redes locales compartidas (universidades o PyMEs) frente a ataques de envenenamiento ARP y falsificación DNS (Man-in-the-Middle).
+**ARPShield** es un monitor local de red que busca señales de suplantación en LAN: ARP, direcciones IP/MAC, DNS, DHCP/DHCPv6, LLMNR, NBNS, mDNS y NDP/IPv6. Es detección pasiva y basada en paquetes visibles y referencias confiables; no garantiza detectar cualquier ataque ni aplica mitigación automática.
 
 ---
 
@@ -9,45 +9,37 @@
 
 | # | Componente | Descripción y Función | Tecnología | Dependencias Directas |
 |---|---|---|---|---|
-| 1 | **Captura de Tráfico** | Captura paquetes ARP y consultas DNS en tiempo real desde las interfaces del sistema. | Python, Scapy (v2.8.0), Npcap | Ninguna |
-| 2 | **Analizador de Amenazas (Motor de Correlación)** | Examina tramas ARP y respuestas DNS cotejándolas con la línea base para detectar discrepancias y anomalias. | Python, Scapy | Componente 1 (Captura) |
-| 3 | **Base de Datos y Línea Base** | Almacena pares IP-MAC de confianza, inventario OUI, registro forense de alertas y bitácora de auditoría. | SQLite / SQLCipher (v1.2.0) | Ninguna |
-| 4 | **Panel de Monitoreo (GUI)** | Interfaz de usuario para la visualización de alertas explicables, estado de la red y control de mitigación. | Python, PySide6 (v6.6.0) | Componente 2 (Analizador) |
+| 1 | **Captura de Tráfico** | TShark captura los protocolos seleccionados desde una interfaz o analiza archivos PCAP/PCAPNG. | TShark, Wireshark, Npcap, `QProcess` | Interfaz y permisos de captura |
+| 2 | **Analizador de Amenazas** | Correlaciona campos de paquetes con la línea base y respuestas contradictorias de DNS/nombres locales y DHCP. | Python, `SpoofingDetector` | Componente 1 y línea base |
+| 3 | **Base de Datos y Línea Base** | Almacena pares IP-MAC, roles confiables, alertas y bitácora de auditoría; migra las restricciones de esquema al iniciar. | SQLite | Ninguna |
+| 4 | **Panel de Monitoreo (GUI)** | Visualiza alertas y permite clasificar dispositivos confiables; no aplica mitigaciones de red. | Python, PySide6 | Componentes 2 y 3 |
 | 5 | **Dashboard y Analytics** | Reúne métricas totales, distribución por severidad, tráfico sospechoso, inventario activo y tendencia de eventos. | PySide6, pandas, matplotlib, SQLite | Componentes 3 y 4 |
-| 6 | **Visualizador de Tráfico y PCAP** | Muestra el tráfico capturado mediante TShark/Wireshark, con filtros por IP, MAC, protocolo y ventanas temporales. | PyShark, TShark, Wireshark | Componentes 1 y 5 |
-| 7 | **Bus de eventos / Cola de trabajo** | Coordinación entre captura, correlación, persistencia y render del dashboard, evitando bloqueos de interfaz. | Python queue / threads / signals | Componentes 1, 2, 4, 5 |
-| 8 | **Análisis de Archivos PCAP** | Inspección forense fuera de línea de capturas de tráfico previamente guardadas. | Python, PyShark (v0.6.0), TShark | Componente 2 (Analizador) |
-| 9 | **Protección de Tabla ARP** | Invocación de utilidades del SO para fijar/restaurar entradas ARP estáticas en la puerta de enlace. | Python, `subprocess`, `netsh` (Windows) | Componente 3 (Base de datos) |
+| 6 | **Visualizador de Tráfico y PCAP** | Muestra como máximo 500 paquetes y agrupa inserciones de la tabla para limitar el uso de recursos. | PySide6, TShark | Componentes 1 y 2 |
+| 7 | **Canal de captura** | Lee la salida de TShark de forma asíncrona; el análisis y la persistencia se ejecutan en el proceso local de la aplicación. | `QProcess`, Python | Componentes 1 y 2 |
+| 8 | **Análisis de archivos PCAP** | Inspección de archivos PCAP/PCAPNG mediante TShark y el mismo motor de correlación. | TShark | Componentes 1 y 2 |
+| 9 | **Mitigación de tabla ARP (planificada)** | El proyecto contempla entradas estáticas, pero el código actual no ejecuta `netsh` ni bloquea tráfico. | Diseño futuro | No implementado |
 | 10 | **Gestión de Evidencia y Reportes** | Guarda evidencias, screenshots, paquetes relevantes y reportes para revisión forense y cumplimiento. | SQLite, JSON, archivos PCAP | Componentes 3, 5, 8 |
 
 ---
 
-## 3. Modelo de Concurrencia y Rendimiento
+## 3. Captura y Rendimiento
 
 ```
 +-----------------------------------------------------------------------+
 |                            PySide6 GUI                                |
-|                        (Hilo Principal / UI)                          |
+|                  Dashboard, tráfico y ajustes                         |
 +-----------------------------------------------------------------------+
-                                   ^
-                                   | Signals / Slots (PySide6)
-                                   v
-+-----------------------------------------------------------------------+
-|                          Worker Thread                                |
-|                        (QThread Secundario)                           |
-|  +-----------------------------------------------------------------+  |
-|  | Circular Buffer (Capacidad Máxima: 1.000 Paquetes)              |  |
-|  +-----------------------------------------------------------------+  |
-|  | Motor de Correlación ARP / DNS                                   |  |
-|  +-----------------------------------------------------------------+  |
-|  | Hilo de Captura en Tiempo Real (Scapy Sniffer)                   |  |
-+-----------------------------------------------------------------------+
+                     | QProcess / salida por lotes
+                     v
+                +-----------+
+                | TShark    |
+                +-----------+
+                     |
+                     v
+            SpoofingDetector -> SQLite
 ```
 
-### Principios de Concurrencia:
-1. **Aislamiento de la Interfaz de Usuario:** Ninguna operación de red I/O ni interacción con el sistema de archivos debe ejecutarse en el hilo principal de PySide6 para evitar congelamientos de interfaz (OWASP ASVS V5.1.4).
-2. **Buffer Circular Mitigador:** La captura de paquetes se encola en un buffer circular en memoria limitado a 1.000 paquetes. Si la velocidad de entrada excede el procesamiento, los paquetes viejos o tramas con longitudes anómalas se descartan para prevenir saturación por denegación de servicio local.
-3. **Comunicación Directa en Memoria:** La transmisión de alertas entre el hilo de inspección (`QThread`) y el panel de monitoreo se realiza nativamente mediante señales y ranuras (`Signals` / `Slots`) de PySide6.
+TShark se gestiona de forma asíncrona con `QProcess`. La interfaz conserva hasta 500 paquetes visibles y la inserción se agrupa en lotes. La correlación y persistencia de alertas son locales; un flujo muy alto de paquetes puede afectar la respuesta de la interfaz.
 
 ---
 
@@ -57,23 +49,20 @@
    - La aplicación inicia en hilo principal con privilegios estándar de usuario.
    - Valida la integridad de la base de datos local SQLite mediante hash SHA-256.
 2. **Construcción de Línea Base:**
-   - Se escanea la subred local para identificar y registrar la MAC e IP legítimas del router (gateway), servidores DNS y dispositivos conocidos.
+   - El escaneo agrega equipos observados a la línea base. El usuario verifica de forma independiente los datos y clasifica gateway, DNS y DHCP autorizados desde Ajustes; el escaneo no debe considerarse prueba de legitimidad.
 3. **Inspección en Tiempo Real:**
-   - Scapy/Npcap captura tramas ARP (`who-has`, `is-at`) y consultas/respuestas DNS.
-   - El Motor de Correlación compara cada trama recibida contra la tabla de confianza (`trusted_baseline`).
+   - TShark/Npcap captura ARP, IPv4/IPv6, DNS, DHCP/DHCPv6, LLMNR, NBNS, mDNS e ICMPv6/NDP en la interfaz seleccionada.
+   - El motor compara los campos observados con la tabla de confianza y busca respuestas conflictivas en la misma captura.
 4. **Detección y Alerta:**
-   - Ante cambios intempestivos de MAC para la IP del router, presencia de múltiples IPs asociadas a una misma MAC o ráfagas ARP no solicitadas, el sistema registra el incidente en SQLite y emite una alerta gráfica explicable.
+   - Ante discrepancias IP/MAC, servidores no incluidos en la lista confiable, respuestas contradictorias o anuncios IPv6 sospechosos, el sistema registra alertas en SQLite. El resultado depende de la visibilidad de la interfaz y de la calidad de la línea base.
 5. **Visualización en Dashboard:**
    - Los datos recopilados se exponen en un dashboard con métricas de red, severidad, inventario activo, tabla ARP, tráfico sospechoso y timeline de alertas.
    - El dashboard se actualiza desde la cola de eventos y la base de datos para ofrecer una vista continua del estado de seguridad.
 6. **Análisis Forense y Tráfico:**
    - El usuario puede abrir una vista de paquetes con filtros de protocolo, IP o MAC utilizando TShark/Wireshark.
    - Se habilitan capturas de archivo PCAP para inspección offline con PyShark y revisión de flujo real del incidente.
-7. **Blindaje Local (Mitigación IPS):**
-   - El usuario decide aplicar el blindaje estático.
-   - Se invoca un diálogo UAC para solicitar permisos elevados puntualmente y ejecutar `netsh interface ipv4 add neighbors` mediante el módulo `subprocess`.
-8. **Reversión:**
-   - Al cerrar la sesión o desconectarse de la red, la entrada de la tabla ARP se restituye al estado dinámico.
+7. **Mitigación:**
+   - La mitigación automática no está implementada. El operador debe responder usando los controles de red y procedimientos de su organización.
 
 ---
 
@@ -90,16 +79,14 @@ El dashboard será el componente principal para la observabilidad de toda la pla
 - Botones de acción: iniciar captura, detener análisis, confirmar incidente, mitigar y exportar evidencia.
 
 ### 5.2 Vista de Tráfico y Captura Forense
-Se requiere un módulo dedicado para exposición del tráfico local mediante TShark/Wireshark:
-- Visualización de paquetes en tiempo real o desde archivos `.pcap`.
-- Filtros por `arp`, `dns`, `ip.src`, `ip.dst`, `eth.addr` y tiempo de captura.
-- Muestra de campos clave: dirección MAC origen, destino, tipo de trama, protocolo y duración.
-- Panel lateral con detalles del paquete seleccionado y marco Ethernet/ARP/DNS asociado.
-- Integración con el motor de correlación para marcar automáticamente paquetes relevantes como evidencia de un ataque.
+La vista actual usa TShark/Wireshark para captura local y análisis de archivos `.pcap`/`.pcapng`:
+- El filtro predeterminado incluye ARP, DNS, DHCP/DHCPv6, LLMNR, NBNS, mDNS e ICMPv6.
+- Muestra campos clave: direcciones MAC/IP, protocolo, hora, tipo ARP e información DNS.
+- Limita la tabla visible a 500 paquetes; la tabla no representa todo el tráfico de una red conmutada.
 
 ### 5.3 Flujo de Datos del Dashboard
 ```text
-Captura (Scapy/Npcap)
+Captura (TShark/Npcap)
         |
         v
 Correlación / detección de amenazas

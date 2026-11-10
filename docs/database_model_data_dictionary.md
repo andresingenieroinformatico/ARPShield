@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS trusted_baseline (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ip_address TEXT NOT NULL UNIQUE,
     mac_address TEXT NOT NULL,
-    device_type TEXT CHECK(device_type IN ('GATEWAY', 'DNS_SERVER', 'KNOWN_HOST', 'OTHER')),
+    device_type TEXT CHECK(device_type IN ('GATEWAY', 'DNS_SERVER', 'DHCP_SERVER', 'KNOWN_HOST', 'OTHER')),
     hostname TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -29,7 +29,12 @@ CREATE TABLE IF NOT EXISTS oui_catalog (
 CREATE TABLE IF NOT EXISTS security_alerts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     timestamp_utc DATETIME DEFAULT CURRENT_TIMESTAMP,
-    alert_type TEXT CHECK(alert_type IN ('GATEWAY_SPOOFING', 'MULTIPLE_IPS_PER_MAC', 'ARP_BURST_UNSOLICITED', 'DNS_SPOOFING')),
+    alert_type TEXT CHECK(alert_type IN (
+        'GATEWAY_SPOOFING', 'MULTIPLE_IPS_PER_MAC', 'ARP_BURST_UNSOLICITED',
+        'DNS_SPOOFING', 'ARP_SPOOFING', 'IP_SPOOFING', 'MAC_SPOOFING',
+        'DHCP_SPOOFING', 'DHCPV6_SPOOFING', 'LLMNR_SPOOFING',
+        'NBNS_SPOOFING', 'MDNS_SPOOFING', 'NDP_SPOOFING'
+    )),
     severity TEXT CHECK(severity IN ('LOW', 'MEDIUM', 'HIGH', 'CRITICAL')),
     attacker_mac TEXT NOT NULL,
     spoofed_ip TEXT NOT NULL,
@@ -63,7 +68,7 @@ CREATE INDEX IF NOT EXISTS idx_alerts_attacker ON security_alerts(attacker_mac);
 | `id` | INTEGER | NO | Identificador único autoincremental (Clave Primaria). |
 | `ip_address` | TEXT | NO | Dirección IPv4 del dispositivo autorizadas (Única). Validada por Regex IPv4. |
 | `mac_address` | TEXT | NO | Dirección física MAC legítima asociada. Formato `XX:XX:XX:XX:XX:XX`. |
-| `device_type` | TEXT | NO | Rol en la red: `GATEWAY`, `DNS_SERVER`, `KNOWN_HOST`, `OTHER`. |
+| `device_type` | TEXT | NO | Rol verificado en la red: `GATEWAY`, `DNS_SERVER`, `DHCP_SERVER`, `KNOWN_HOST`, `OTHER`. Se configura desde Ajustes y se usa como referencia para detectar suplantación. |
 | `hostname` | TEXT | SÍ | Nombre de host o resolución NetBIOS/mDNS si está disponible. |
 | `created_at` | DATETIME | NO | Marca de tiempo de registro inicial (UTC). |
 | `updated_at` | DATETIME | NO | Última modificación de la entrada. |
@@ -73,7 +78,7 @@ CREATE INDEX IF NOT EXISTS idx_alerts_attacker ON security_alerts(attacker_mac);
 |---|---|---|---|
 | `id` | INTEGER | NO | Identificador único del incidente. |
 | `timestamp_utc` | DATETIME | NO | Timestamp UTC preciso del momento del ataque/detección. |
-| `alert_type` | TEXT | NO | Clasificación del evento: `GATEWAY_SPOOFING`, `MULTIPLE_IPS_PER_MAC`, `ARP_BURST_UNSOLICITED`, `DNS_SPOOFING`. |
+| `alert_type` | TEXT | NO | Clasificación: `GATEWAY_SPOOFING`, `MULTIPLE_IPS_PER_MAC`, `ARP_BURST_UNSOLICITED`, `DNS_SPOOFING`, `ARP_SPOOFING`, `IP_SPOOFING`, `MAC_SPOOFING`, `DHCP_SPOOFING`, `DHCPV6_SPOOFING`, `LLMNR_SPOOFING`, `NBNS_SPOOFING`, `MDNS_SPOOFING` o `NDP_SPOOFING`. |
 | `severity` | TEXT | NO | Nivel de impacto: `LOW`, `MEDIUM`, `HIGH`, `CRITICAL`. |
 | `attacker_mac` | TEXT | NO | Dirección MAC identificada como origen de la suplantación. |
 | `spoofed_ip` | TEXT | NO | Dirección IP objetivo de la suplantación (ej. IP del router). |
