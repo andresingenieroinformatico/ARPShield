@@ -13,7 +13,10 @@ from arpshield.ui.traffic_viewer import (
     MAX_PACKET_ROWS,
     PACKET_COLUMNS,
     TrafficViewerPanel,
+    capture_interface_target,
+    interface_guid,
     packet_fields_to_row,
+    parse_physical_adapters,
     parse_interfaces,
 )
 
@@ -74,6 +77,35 @@ class TrafficViewerTests(unittest.TestCase):
         ]
 
         self.assertEqual(capture_fields, list(CAPTURE_FIELDS))
+
+    def test_capture_uses_stable_local_device_name_not_interface_number(self):
+        interface = r"\Device\NPF_{12345678-1234-1234-1234-123456789012} (Ethernet)"
+        target = capture_interface_target(interface)
+
+        self.assertEqual(
+            target,
+            r"\Device\NPF_{12345678-1234-1234-1234-123456789012}",
+        )
+        arguments = TrafficViewerPanel._live_capture_arguments(target, "arp")
+        self.assertEqual(arguments[:2], ["-i", target])
+
+    def test_capture_target_excludes_unconfigured_remote_sources(self):
+        for interface in ("ciscodump (Cisco remote capture)", "sshdump (SSH remote capture)"):
+            with self.subTest(interface=interface):
+                self.assertIsNone(capture_interface_target(interface))
+
+    def test_windows_physical_adapter_data_maps_by_guid(self):
+        adapters = parse_physical_adapters(
+            '[{"Name":"Ethernet","Status":"Up",'
+            '"InterfaceGuid":"{12345678-1234-1234-1234-123456789012}"}]'
+        )
+        target = r"\Device\NPF_{12345678-1234-1234-1234-123456789012}"
+
+        self.assertEqual(interface_guid(target), "12345678-1234-1234-1234-123456789012")
+        self.assertEqual(
+            adapters[interface_guid(target)],
+            {"name": "Ethernet", "status": "Up"},
+        )
 
 
 if __name__ == "__main__":
