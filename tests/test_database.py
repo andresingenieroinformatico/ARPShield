@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 import subprocess
 import sys
@@ -56,6 +57,7 @@ class DatabaseManagerTests(unittest.TestCase):
             alerts = db.list_alerts()
             self.assertEqual(len(alerts), 2)
             self.assertEqual({alert["alert_type"] for alert in alerts}, {"GATEWAY_SPOOFING", "DHCP_SPOOFING"})
+            self.assertEqual(json.loads(alerts[0]["evidence_details"]), {})
 
     def test_initialize_migrates_device_types_and_preserves_baseline(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -108,10 +110,32 @@ class DatabaseManagerTests(unittest.TestCase):
                 7,
                 "MAC distinta detectada en la IP del gateway",
                 0,
+                {"capture_source": "test", "observed_mac": "AA:BB:CC:DD:EE:FF"},
             )
             alerts = db.list_alerts()
             self.assertEqual(len(alerts), 1)
             self.assertEqual(alerts[0]["alert_type"], "GATEWAY_SPOOFING")
+            self.assertEqual(
+                json.loads(alerts[0]["evidence_details"])["observed_mac"],
+                "AA:BB:CC:DD:EE:FF",
+            )
+
+    def test_add_alert_deduplicates_same_signal_within_30_seconds(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db = DatabaseManager(Path(tmp_dir) / "arpshield.db")
+            db.initialize()
+            alert = {
+                "alert_type": "ARP_SPOOFING",
+                "severity": "HIGH",
+                "attacker_mac": "AA:BB:CC:DD:EE:FF",
+                "spoofed_ip": "192.168.1.1",
+                "packet_count": 1,
+                "evidence_summary": "Anuncio ARP conflictivo",
+            }
+
+            self.assertTrue(db.add_alert(**alert))
+            self.assertFalse(db.add_alert(**{**alert, "attacker_mac": "aa:bb:cc:dd:ee:ff"}))
+            self.assertEqual(len(db.list_alerts()), 1)
 
     def test_dashboard_snapshot_aggregates_and_limits_recent_alerts(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -130,6 +154,29 @@ class DatabaseManagerTests(unittest.TestCase):
             self.assertEqual(dict(snapshot["alert_type_counts"])["DNS_SPOOFING"], 2)
             self.assertEqual(len(snapshot["recent_alerts"]), 2)
             self.assertEqual(sum(snapshot["daily_counts"].values()), 3)
+
+    def test_dashboard_starts_with_zero_alerts_for_each_database_session(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "arpshield.db"
+            previous_session = DatabaseManager(path)
+            previous_session.initialize()
+            previous_session.add_alert(
+                "ARP_SPOOFING", "HIGH", "AA:BB:CC:DD:EE:FF", "192.168.1.1", 1, "Alerta anterior"
+            )
+
+            current_session = DatabaseManager(path)
+            current_session.initialize()
+            snapshot = current_session.dashboard_snapshot()
+
+            self.assertEqual(snapshot["alert_count"], 0)
+            self.assertEqual(snapshot["high_severity_count"], 0)
+            self.assertEqual(snapshot["alert_type_counts"], [])
+            self.assertEqual(snapshot["recent_alerts"], [])
+
+            current_session.add_alert(
+                "DNS_SPOOFING", "CRITICAL", "AA:BB:CC:DD:EE:00", "192.168.1.2", 1, "Alerta actual"
+            )
+            self.assertEqual(current_session.dashboard_snapshot()["alert_count"], 1)
 
     def test_dashboard_snapshot_rejects_non_positive_limits(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -183,6 +230,24 @@ class ThreatMonitorTests(unittest.TestCase):
 
             self.assertEqual(baseline[0]["mac_address"], "00:11:22:33:44:55")
             self.assertEqual(baseline[0]["device_type"], "GATEWAY")
+
+    def test_repeated_anomaly_check_does_not_return_or_store_duplicate_alert(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db = DatabaseManager(Path(tmp_dir) / "arpshield.db")
+            db.initialize()
+            db.add_baseline_entry("192.168.1.1", "00:11:22:33:44:55", "GATEWAY")
+            monitor = ThreatMonitor(db)
+            observed = [{
+                "ip_address": "192.168.1.1",
+                "mac_address": "AA:BB:CC:DD:EE:FF",
+            }]
+            with patch.object(monitor, "discover_local_network", return_value=observed):
+                first_check = monitor.check_for_anomalies()
+                second_check = monitor.check_for_anomalies()
+
+            self.assertEqual(len(first_check), 1)
+            self.assertEqual(second_check, [])
+            self.assertEqual(len(db.list_alerts()), 1)
 
 
 if __name__ == "__main__":

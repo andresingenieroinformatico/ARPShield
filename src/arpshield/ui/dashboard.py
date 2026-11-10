@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -11,6 +12,9 @@ try:
         QGridLayout,
         QHeaderView,
         QLabel,
+        QDialog,
+        QDialogButtonBox,
+        QPlainTextEdit,
         QTableWidget,
         QTableWidgetItem,
         QVBoxLayout,
@@ -18,7 +22,8 @@ try:
     )
 except ModuleNotFoundError:  # pragma: no cover
     Qt = QPointF = QRectF = QColor = QFont = QPainter = QPainterPath = QPen = QPolygonF = None
-    QFrame = QGridLayout = QHeaderView = QLabel = QTableWidget = QTableWidgetItem = QVBoxLayout = QWidget = None
+    QFrame = QGridLayout = QHeaderView = QLabel = QDialog = QDialogButtonBox = QPlainTextEdit = None
+    QTableWidget = QTableWidgetItem = QVBoxLayout = QWidget = None
 
 
 BACKGROUND = "#171827"
@@ -31,6 +36,27 @@ GREEN = "#25c878"
 ORANGE = "#f39c12"
 RED = "#e74c3c"
 PURPLE = "#a45bb5"
+
+
+def alert_details_text(alert: dict[str, Any]) -> str:
+    raw_details = alert.get("evidence_details", "{}")
+    try:
+        evidence_details = json.loads(raw_details) if isinstance(raw_details, str) else raw_details
+    except json.JSONDecodeError:
+        evidence_details = {"raw_evidence_details": raw_details}
+    details = {
+        "ID": alert.get("id"),
+        "Fecha UTC": alert.get("timestamp_utc"),
+        "Tipo": alert.get("alert_type"),
+        "Severidad": alert.get("severity"),
+        "IP afectada": alert.get("spoofed_ip"),
+        "MAC observada": alert.get("attacker_mac"),
+        "Paquetes asociados": alert.get("packet_count"),
+        "Mitigación aplicada": bool(alert.get("mitigation_applied", 0)),
+        "Resumen": alert.get("evidence_summary"),
+        "Evidencia capturada": evidence_details,
+    }
+    return json.dumps(details, ensure_ascii=False, indent=2)
 
 
 class TrendChart(QWidget):
@@ -167,6 +193,7 @@ class DashboardPanel(QWidget):
     def __init__(self, monitor: Any):
         super().__init__()
         self.monitor = monitor
+        self._visible_alerts: list[dict[str, Any]] = []
         self.setObjectName("dashboardPanel")
         self.setStyleSheet(f"""
             QWidget#dashboardPanel {{ background: {BACKGROUND}; color: {TEXT}; }}
@@ -188,7 +215,7 @@ class DashboardPanel(QWidget):
         self.baseline_label = QLabel("0")
         cards = [
             ("DISPOSITIVOS DETECTADOS", self.total_devices_label, BLUE, "◉"),
-            ("ALERTAS REGISTRADAS", self.alerts_label, GREEN, "★"),
+            ("ALERTAS DE ESTA SESIÓN", self.alerts_label, GREEN, "★"),
             ("RIESGO ALTO / CRÍTICO", self.high_severity_label, ORANGE, "◎"),
             ("ENTRADAS DE CONFIANZA", self.baseline_label, RED, "◆"),
         ]
@@ -221,6 +248,7 @@ class DashboardPanel(QWidget):
         self.alert_table.setAlternatingRowColors(True)
         self.alert_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.alert_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.alert_table.cellClicked.connect(self._show_alert_details)
         self.alert_table.setMinimumHeight(150)
         self.alert_table.setStyleSheet(f"""
             QTableWidget {{ background: {PANEL}; alternate-background-color: {PANEL_ALT}; color: {TEXT}; gridline-color: #303246; border: 0; }}
@@ -309,6 +337,7 @@ class DashboardPanel(QWidget):
         self.type_chart.set_data(categories)
 
         alerts = snapshot["recent_alerts"]
+        self._visible_alerts = alerts
         self.alert_table.setRowCount(len(alerts))
         self.alert_table.setUpdatesEnabled(False)
         for row_index, alert in enumerate(alerts):
@@ -322,8 +351,25 @@ class DashboardPanel(QWidget):
             ]
             for column, value in enumerate(values):
                 item = QTableWidgetItem(value)
+                item.setToolTip("Haz clic para ver todos los detalles de esta alerta.")
                 if column == 2:
                     severity_colors = {"LOW": GREEN, "MEDIUM": ORANGE, "HIGH": RED, "CRITICAL": RED}
                     item.setForeground(QColor(severity_colors.get(value, MUTED)))
                 self.alert_table.setItem(row_index, column, item)
         self.alert_table.setUpdatesEnabled(True)
+
+    def _show_alert_details(self, row: int, _column: int) -> None:
+        if row < 0 or row >= len(self._visible_alerts):
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Detalle de alerta")
+        dialog.setMinimumSize(720, 560)
+        layout = QVBoxLayout(dialog)
+        evidence = QPlainTextEdit(dialog)
+        evidence.setReadOnly(True)
+        evidence.setPlainText(alert_details_text(self._visible_alerts[row]))
+        layout.addWidget(evidence)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, parent=dialog)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        dialog.exec()

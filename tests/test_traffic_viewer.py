@@ -77,6 +77,9 @@ class TrafficViewerTests(unittest.TestCase):
         ]
 
         self.assertEqual(capture_fields, list(CAPTURE_FIELDS))
+        self.assertIn("udp.srcport", capture_fields)
+        self.assertIn("udp.dstport", capture_fields)
+        self.assertIn(("-E", "occurrence=a"), list(zip(arguments, arguments[1:])))
 
     def test_capture_uses_stable_local_device_name_not_interface_number(self):
         interface = r"\Device\NPF_{12345678-1234-1234-1234-123456789012} (Ethernet)"
