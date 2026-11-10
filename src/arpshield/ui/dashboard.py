@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 from collections import Counter
-from datetime import datetime, timedelta
-from typing import Any
+from datetime import date, datetime, timedelta
+from typing import Any, TYPE_CHECKING
 
-try:
+if TYPE_CHECKING:
     from PySide6.QtCore import QPointF, QRectF, Qt
-    from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPolygonF
+    from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
     from PySide6.QtWidgets import (
         QFrame,
         QGridLayout,
@@ -17,9 +17,25 @@ try:
         QVBoxLayout,
         QWidget,
     )
-except ModuleNotFoundError:  # pragma: no cover
-    Qt = QPointF = QRectF = QColor = QFont = QPainter = QPainterPath = QPen = QPolygonF = None
-    QFrame = QGridLayout = QHeaderView = QLabel = QTableWidget = QTableWidgetItem = QVBoxLayout = QWidget = None
+    _PYSIDE6_AVAILABLE = True
+else:
+    try:
+        from PySide6.QtCore import QPointF, QRectF, Qt
+        from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
+        from PySide6.QtWidgets import (
+            QFrame,
+            QGridLayout,
+            QHeaderView,
+            QLabel,
+            QTableWidget,
+            QTableWidgetItem,
+            QVBoxLayout,
+            QWidget,
+        )
+        _PYSIDE6_AVAILABLE = True
+    except ModuleNotFoundError:  # pragma: no cover
+        _PYSIDE6_AVAILABLE = False
+        QWidget = object
 
 
 BACKGROUND = "#171827"
@@ -36,6 +52,8 @@ PURPLE = "#a45bb5"
 
 class TrendChart(QWidget):
     def __init__(self, parent: QWidget | None = None):
+        if not _PYSIDE6_AVAILABLE:
+            raise ModuleNotFoundError("PySide6 no está instalado. Ejecuta: python -m pip install -r requirements.txt")
         super().__init__(parent)
         self.labels: list[str] = []
         self.values: list[int] = []
@@ -108,6 +126,8 @@ class TypeBreakdown(QWidget):
     COLORS = [BLUE, GREEN, ORANGE, RED, PURPLE]
 
     def __init__(self, parent: QWidget | None = None):
+        if not _PYSIDE6_AVAILABLE:
+            raise ModuleNotFoundError("PySide6 no está instalado. Ejecuta: python -m pip install -r requirements.txt")
         super().__init__(parent)
         self.categories: list[tuple[str, int, str]] = []
         self.setMinimumHeight(190)
@@ -131,7 +151,7 @@ class TypeBreakdown(QWidget):
             painter.drawEllipse(ring.adjusted(10, 10, -10, -10))
         else:
             start_angle = 90 * 16
-            for name, value, color in self.categories:
+            for _name, value, color in self.categories:
                 span = round(360 * 16 * value / total)
                 painter.setPen(QPen(QColor(color), 18))
                 painter.drawArc(ring.adjusted(10, 10, -10, -10), start_angle, -span)
@@ -163,6 +183,8 @@ class TypeBreakdown(QWidget):
 
 class DashboardPanel(QWidget):
     def __init__(self, monitor: Any):
+        if not _PYSIDE6_AVAILABLE:
+            raise ModuleNotFoundError("PySide6 no está instalado. Ejecuta: python -m pip install -r requirements.txt")
         super().__init__()
         self.monitor = monitor
         self.setObjectName("dashboardPanel")
@@ -275,7 +297,7 @@ class DashboardPanel(QWidget):
         self.baseline_label.setText(str(len(baseline)))
 
         today = datetime.now().date()
-        daily_counts = Counter()
+        daily_counts: Counter[date] = Counter()
         for alert in alerts:
             try:
                 alert_date = datetime.fromisoformat(str(alert.get("timestamp_utc", ""))).date()
@@ -285,8 +307,8 @@ class DashboardPanel(QWidget):
                 daily_counts[alert_date] += 1
         dates = [today - timedelta(days=offset) for offset in range(11, -1, -1)]
         self.trend_chart.set_data(
-            [date.strftime("%d %b") for date in dates],
-            [daily_counts[date] for date in dates],
+            [day.strftime("%d %b") for day in dates],
+            [daily_counts[day] for day in dates],
         )
 
         type_counts = Counter(str(alert.get("alert_type", "OTHER")) for alert in alerts)

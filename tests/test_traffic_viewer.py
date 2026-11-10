@@ -7,10 +7,13 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from arpshield.ui.traffic_viewer import PACKET_COLUMNS, packet_fields_to_row, parse_interfaces
+from arpshield.ui.traffic_viewer import MAX_PACKET_ROWS, PACKET_COLUMNS, packet_fields_to_row, parse_interfaces
 
 
 class TrafficViewerTests(unittest.TestCase):
+    def test_circular_buffer_limit_matches_asvs_control(self):
+        self.assertEqual(MAX_PACKET_ROWS, 1000)
+
     def test_parse_tshark_interface_list(self):
         output = (
             "1. \\Device\\NPF_{12345678-1234-1234-1234-123456789012} (Ethernet)\n"
@@ -49,6 +52,8 @@ class TrafficViewerTests(unittest.TestCase):
 
         row = packet_fields_to_row("\t".join(fields))
 
+        self.assertIsNotNone(row)
+        assert row is not None
         self.assertEqual(len(PACKET_COLUMNS), 8)
         self.assertEqual(row[2], "ARP")
         self.assertEqual(row[3:5], ["192.168.1.10", "192.168.1.1"])
