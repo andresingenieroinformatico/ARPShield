@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -24,6 +25,70 @@ class DatabaseManagerTests(unittest.TestCase):
             self.assertIn("trusted_baseline", names)
             self.assertIn("security_alerts", names)
             self.assertIn("audit_logs", names)
+
+    def test_initialize_migrates_existing_alert_constraint(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "arpshield.db"
+            connection = sqlite3.connect(path)
+            connection.executescript(
+                """
+                CREATE TABLE security_alerts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp_utc DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    alert_type TEXT CHECK(alert_type IN ('GATEWAY_SPOOFING', 'MULTIPLE_IPS_PER_MAC', 'ARP_BURST_UNSOLICITED', 'DNS_SPOOFING')) NOT NULL,
+                    severity TEXT CHECK(severity IN ('LOW', 'MEDIUM', 'HIGH', 'CRITICAL')) NOT NULL,
+                    attacker_mac TEXT NOT NULL,
+                    spoofed_ip TEXT NOT NULL,
+                    packet_count INTEGER DEFAULT 1,
+                    evidence_summary TEXT NOT NULL,
+                    mitigation_applied INTEGER DEFAULT 0
+                );
+                INSERT INTO security_alerts (alert_type, severity, attacker_mac, spoofed_ip, evidence_summary)
+                VALUES ('GATEWAY_SPOOFING', 'HIGH', '00:11:22:33:44:55', '192.168.1.1', 'Registro previo');
+                """
+            )
+            connection.close()
+
+            db = DatabaseManager(path)
+            db.initialize()
+            db.add_alert("DHCP_SPOOFING", "HIGH", "AA:BB:CC:DD:EE:FF", "192.168.1.2", 1, "Oferta sospechosa")
+
+            alerts = db.list_alerts()
+            self.assertEqual(len(alerts), 2)
+            self.assertEqual({alert["alert_type"] for alert in alerts}, {"GATEWAY_SPOOFING", "DHCP_SPOOFING"})
+
+    def test_initialize_migrates_device_types_and_preserves_baseline(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "arpshield.db"
+            connection = sqlite3.connect(path)
+            connection.executescript(
+                """
+                CREATE TABLE trusted_baseline (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ip_address TEXT NOT NULL UNIQUE,
+                    mac_address TEXT NOT NULL,
+                    device_type TEXT CHECK(device_type IN ('GATEWAY', 'DNS_SERVER', 'KNOWN_HOST', 'OTHER')) NOT NULL,
+                    hostname TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                );
+                INSERT INTO trusted_baseline (ip_address, mac_address, device_type, hostname)
+                VALUES ('192.168.1.1', '00:11:22:33:44:55', 'KNOWN_HOST', 'router');
+                """
+            )
+            connection.close()
+
+            db = DatabaseManager(path)
+            db.initialize()
+            db.set_baseline_device_type("192.168.1.1", "DHCP_SERVER")
+
+            baseline = db.list_baseline()
+            self.assertEqual(len(baseline), 1)
+            self.assertEqual(baseline[0]["hostname"], "router")
+            self.assertEqual(baseline[0]["device_type"], "DHCP_SERVER")
+
+            with self.assertRaises(ValueError):
+                db.set_baseline_device_type("192.168.1.1", "UNSUPPORTED")
 
     def test_round_trip_baseline_and_alert(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -95,6 +160,29 @@ class ThreatMonitorTests(unittest.TestCase):
             self.assertEqual(len(entries), 1)
             self.assertEqual(entries[0]["ip_address"], "192.168.1.1")
             self.assertEqual(entries[0]["mac_address"], "00:11:22:33:44:55")
+
+    def test_refresh_baseline_does_not_replace_existing_trusted_mac(self):
+        fake_output = (
+            "Interface: 192.168.1.10 --- 0x12\r\n"
+            "  192.168.1.1     AA-BB-CC-DD-EE-FF     dynamic\r\n"
+        ).encode("cp850")
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db = DatabaseManager(Path(tmp_dir) / "arpshield.db")
+            db.initialize()
+            db.add_baseline_entry("192.168.1.1", "00:11:22:33:44:55", "GATEWAY")
+            monitor = ThreatMonitor(db)
+
+            with patch(
+                "subprocess.run",
+                return_value=subprocess.CompletedProcess(
+                    args=["arp", "-a"], returncode=0, stdout=fake_output, stderr=b""
+                ),
+            ):
+                baseline = monitor.refresh_baseline()
+
+            self.assertEqual(baseline[0]["mac_address"], "00:11:22:33:44:55")
+            self.assertEqual(baseline[0]["device_type"], "GATEWAY")
 
 
 if __name__ == "__main__":

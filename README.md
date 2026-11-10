@@ -1,6 +1,6 @@
 # ARPShield
 
-ARPShield es una prueba de concepto de un IDS/IPS local orientado a detectar suplantación ARP y envenenamiento DNS en redes LAN pequeñas. Este proyecto se basa en la documentación de arquitectura y seguridad del repositorio y constituye una base inicial para el desarrollo funcional.
+ARPShield es un monitor local de red para detectar señales de suplantación en LAN pequeñas. Incluye análisis pasivo de ARP, direcciones IP/MAC, respuestas DNS, ofertas DHCP/DHCPv6 en conflicto, LLMNR/NBNS/mDNS y anuncios NDP/IPv6 cuando esos paquetes son visibles en la interfaz capturada.
 
 ## Objetivo
 
@@ -37,8 +37,16 @@ La implementación sigue la línea de la documentación del proyecto:
 - Ventana principal con línea base, alertas y acciones de mitigación.
 - Motor de detección con escaneo local de red y análisis sencillo de anomalías.
 
+## Detección pasiva de spoofing
+
+En la pestaña **Tráfico**, inicia una captura con el filtro predeterminado para analizar ARP, DNS, DHCP/DHCPv6/BOOTP, LLMNR, NBNS, mDNS e ICMPv6/NDP. En Windows, instala Wireshark con Npcap y asegúrate de contar con permisos de captura. Las alertas detectadas durante la captura o el análisis de PCAP se guardan en SQLite y aparecen en el dashboard.
+
+Los detectores comparan anuncios IP/MAC y gateways IPv6 con la línea base; comparan respuestas DNS con DNS marcados como confiables y buscan respuestas contradictorias; y detectan respuestas de servidores DHCP/DHCPv6 no incluidos en la lista confiable o distintos para una misma transacción, además de respuestas de nombres locales contradictorias. Tras escanear, abre **Ajustes** para clasificar gateway, DNS y DHCP autorizados. La línea base es sensible: el primer escaneo agrega equipos nuevos, pero **no reemplaza automáticamente** las asociaciones existentes. Un primer escaneo durante un ataque podría registrar una MAC falsa; verifica IP/MAC por una fuente independiente antes de confiar en la línea base.
+
+Esto **no garantiza detectar todo spoofing**. Una captura en un PC de una red conmutada puede no ver paquetes unicast entre otros equipos; la coexistencia de varios servidores DHCP/DHCPv6 puede ser legítima; DNS cifrado (DoH/DoT), redes Wi-Fi que requieren modo monitor, ataques fuera de la interfaz, suplantaciones de aplicación/TLS y protocolos que no aparezcan en la captura quedan fuera. El filtro elegido también limita la visibilidad. Usa un puerto espejo/TAP o sensores en los segmentos pertinentes y configura referencias confiables para elevar la cobertura. Las alertas indican señales sospechosas, no una prueba definitiva de intrusión.
+
 ## Uso en equipos con recursos limitados
 
 La interfaz limita el historial visible a los últimos 500 paquetes y 100 alertas, actualiza la tabla de paquetes por lotes y consulta estadísticas agregadas para el dashboard. El panel se actualiza cada 15 segundos solo cuando está visible. Estos límites reducen el consumo de memoria y CPU cuando hay historial extenso; no limitan los registros que ya están guardados en SQLite.
 
-En equipos con 4 GB de RAM, se recomienda cerrar aplicaciones pesadas durante la captura y mantener el filtro de tráfico acotado (por defecto, `arp or dns`). La captura sigue dependiendo de TShark/Wireshark y del sistema operativo, por lo que el consumo total varía según el tráfico y los programas abiertos.
+En equipos con 4 GB de RAM, se recomienda cerrar aplicaciones pesadas durante la captura y mantener el filtro de tráfico acotado (por defecto, ARP, DNS, DHCP/DHCPv6, LLMNR/NBNS/mDNS e ICMPv6). La captura sigue dependiendo de TShark/Wireshark y del sistema operativo, por lo que el consumo total varía según el tráfico y los programas abiertos.

@@ -4,13 +4,19 @@ from collections import deque
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 <<<<<<< HEAD
+<<<<<<< HEAD
 if TYPE_CHECKING:
 =======
+=======
+from ..detection import CAPTURE_FIELDS
+
+>>>>>>> 1fc77c61331b7cfe33e18e96de74b7c08cd541b9
 try:
 >>>>>>> 4551bfa7299551eff2751d0ecb43c9b37412521b
     from PySide6.QtCore import QProcess, QTimer, Qt
@@ -70,6 +76,7 @@ MAX_PACKET_ROWS = 500
 PACKET_BATCH_SIZE = 50
 >>>>>>> 4551bfa7299551eff2751d0ecb43c9b37412521b
 PACKET_COLUMNS = ["Hora", "N.º", "Protocolo", "IP origen", "IP destino", "MAC origen", "MAC destino", "Información"]
+DEFAULT_CAPTURE_FILTER = "arp or dns or dhcp or dhcpv6 or bootp or llmnr or nbns or mdns or icmpv6"
 
 
 def find_tshark() -> str | None:
@@ -169,6 +176,8 @@ else:
             self._mode = "idle"
             self._stdout_buffer = ""
             self._pending_rows: list[list[str]] = []
+            self._detected_alert_count = 0
+            self._detection_persistence_error = False
             self.process = QProcess(self)
             self.process.readyReadStandardOutput.connect(self._read_output)
             self.process.readyReadStandardError.connect(self._read_error)
@@ -179,11 +188,28 @@ else:
             self._flush_timer.timeout.connect(self._flush_pending_rows)
 >>>>>>> 4551bfa7299551eff2751d0ecb43c9b37412521b
 
+<<<<<<< HEAD
         self.process = QProcess(self)
         self.process.readyReadStandardOutput.connect(self._read_output)
         self.process.readyReadStandardError.connect(self._read_error)
         self.process.finished.connect(self._process_finished)
         self.process.errorOccurred.connect(self._process_error)
+=======
+            layout = QVBoxLayout(self)
+            layout.setContentsMargins(22, 18, 22, 18)
+            layout.setSpacing(12)
+            controls = QHBoxLayout()
+            controls.setSpacing(9)
+            self.interface_combo = QComboBox()
+            self.filter_input = QLineEdit(DEFAULT_CAPTURE_FILTER)
+            self.filter_input.setPlaceholderText("Filtro de captura (ej. arp or dns)")
+            self.refresh_button = QPushButton("Detectar interfaces")
+            self.start_button = QPushButton("Iniciar captura")
+            self.stop_button = QPushButton("Detener")
+            self.open_capture_button = QPushButton("Abrir PCAP")
+            self.stop_button.setEnabled(False)
+            self.start_button.setObjectName("primaryAction")
+>>>>>>> 1fc77c61331b7cfe33e18e96de74b7c08cd541b9
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(22, 18, 22, 18)
@@ -314,12 +340,14 @@ else:
                 return
 
             interface_id = self.interface_combo.currentData()
-            display_filter = self.filter_input.text().strip() or "arp or dns"
+            display_filter = self.filter_input.text().strip() or DEFAULT_CAPTURE_FILTER
             arguments = self._packet_arguments(display_filter)
             arguments[2:2] = ["-i", str(interface_id)]
             self._mode = "live"
             self._stdout_buffer = ""
             self._pending_rows.clear()
+            self._detected_alert_count = 0
+            self._detection_persistence_error = False
             self.packet_table.setRowCount(0)
             self._set_running(True)
             self.status_label.setText(f"Capturando en {self.interface_combo.currentText()} · filtro: {display_filter}")
@@ -327,30 +355,11 @@ else:
 
         @staticmethod
         def _packet_arguments(display_filter: str) -> list[str]:
-            fields = [
-                "frame.time",
-                "frame.number",
-                "frame.protocols",
-                "eth.src",
-                "eth.dst",
-                "arp.opcode",
-                "arp.src.proto_ipv4",
-                "arp.src.hw_mac",
-                "arp.dst.proto_ipv4",
-                "arp.dst.hw_mac",
-                "dns.qry.name",
-                "dns.flags.response",
-                "dns.a",
-                "ip.src",
-                "ip.dst",
-                "ipv6.src",
-                "ipv6.dst",
-            ]
             arguments = ["-l", "-n"]
             if display_filter:
                 arguments.extend(["-Y", display_filter])
             arguments.extend(["-T", "fields", "-E", "separator=\t", "-E", "occurrence=f"])
-            for field in fields:
+            for field in CAPTURE_FIELDS:
                 arguments.extend(["-e", field])
             return arguments
 
@@ -361,7 +370,10 @@ else:
                     self.process.kill()
                 self._read_output()
                 self._set_running(False)
-                self.status_label.setText(f"Captura detenida · {self.packet_table.rowCount()} paquetes visibles.")
+                self.status_label.setText(
+                    f"Captura detenida · {self.packet_table.rowCount()} paquetes visibles."
+                    f"{self._detection_warning()}"
+                )
 
         def load_capture_file(self) -> None:
             path, _ = QFileDialog.getOpenFileName(
@@ -374,6 +386,7 @@ else:
             self.start_button.setEnabled(False)
             return
 
+<<<<<<< HEAD
 <<<<<<< HEAD
         try:
             result = subprocess.run(
@@ -407,9 +420,14 @@ else:
             self.status_label.setText("TShark está instalado, pero no hay interfaces de captura disponibles.")
 =======
             display_filter = self.filter_input.text().strip() or "arp or dns"
+=======
+            display_filter = self.filter_input.text().strip() or DEFAULT_CAPTURE_FILTER
+>>>>>>> 1fc77c61331b7cfe33e18e96de74b7c08cd541b9
             self._mode = "file"
             self._stdout_buffer = ""
             self._pending_rows.clear()
+            self._detected_alert_count = 0
+            self._detection_persistence_error = False
             self.packet_table.setRowCount(0)
             fields = self._packet_arguments(display_filter)
             fields = fields[fields.index("-T") :]
@@ -427,11 +445,27 @@ else:
             if lines and not lines[-1].endswith(("\n", "\r")):
                 self._stdout_buffer = lines.pop()
             for line in lines:
+                self._analyze_capture_record(line)
                 row = packet_fields_to_row(line)
                 if row:
                     self._pending_rows.append(row)
                     if len(self._pending_rows) >= PACKET_BATCH_SIZE:
                         self._flush_pending_rows()
+
+        def _analyze_capture_record(self, line: str) -> None:
+            if not self.monitor or self._detection_persistence_error:
+                return
+            try:
+                alerts = self.monitor.analyze_capture_record(line)
+            except (OSError, sqlite3.Error) as exc:
+                self._detection_persistence_error = True
+                self.status_label.setText(f"Error guardando alertas de detección: {exc}")
+                return
+            self._detected_alert_count += len(alerts)
+            if alerts:
+                self.status_label.setText(
+                    f"Posible spoofing detectado: {self._detected_alert_count} alerta(s) en esta captura."
+                )
 
         def _flush_pending_rows(self) -> None:
             if not self._pending_rows:
@@ -536,13 +570,37 @@ else:
 =======
             self._read_error()
             if self._stdout_buffer:
+                self._analyze_capture_record(self._stdout_buffer)
                 row = packet_fields_to_row(self._stdout_buffer)
                 if row:
                     self._pending_rows.append(row)
                 self._stdout_buffer = ""
 >>>>>>> 4551bfa7299551eff2751d0ecb43c9b37412521b
             self._set_running(False)
+<<<<<<< HEAD
             self.status_label.setText(f"Captura detenida · {self.packet_table.rowCount()} paquetes visibles.")
+=======
+            if exit_code:
+                self.status_label.setText(
+                    f"TShark terminó con código {exit_code}; revisa los permisos o el filtro."
+                    f"{self._detection_warning()}"
+                )
+            elif self._mode == "file":
+                self.status_label.setText(
+                    f"PCAP analizado · {self.packet_table.rowCount()} paquetes visibles · "
+                    f"{self._detected_alert_count} posible(s) spoofing.{self._detection_warning()}"
+                )
+            elif self._mode == "live":
+                self.status_label.setText(
+                    f"Captura finalizada · {self.packet_table.rowCount()} paquetes visibles · "
+                    f"{self._detected_alert_count} posible(s) spoofing.{self._detection_warning()}"
+                )
+
+        def _detection_warning(self) -> str:
+            if self._detection_persistence_error:
+                return " | Alertas incompletas: se detuvo el análisis porque falló su almacenamiento."
+            return ""
+>>>>>>> 1fc77c61331b7cfe33e18e96de74b7c08cd541b9
 
     def load_capture_file(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
