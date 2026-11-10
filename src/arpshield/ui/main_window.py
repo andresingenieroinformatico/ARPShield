@@ -48,6 +48,21 @@ def trusted_device_label(entry: dict[str, object]) -> str:
     return f"{display_name}  ·  IP {ip_address}  ·  MAC {mac_address}"
 
 
+def trusted_device_matches(entry: dict[str, object], query: str) -> bool:
+    needle = query.casefold().strip()
+    if not needle:
+        return True
+    searchable_values = (
+        trusted_device_label(entry),
+        str(entry.get("hostname") or ""),
+        str(entry.get("device_type") or ""),
+        DEVICE_TYPE_LABELS.get(str(entry.get("device_type") or ""), ""),
+        str(entry.get("ip_address") or ""),
+        str(entry.get("mac_address") or ""),
+    )
+    return any(needle in value.casefold() for value in searchable_values)
+
+
 if QApplication is None:
     class MainWindow:
         def __init__(self, monitor: ThreatMonitor):
@@ -195,6 +210,15 @@ else:
             )
             trusted_description.setWordWrap(True)
             trusted_description.setStyleSheet(f"color: {MUTED};")
+            self.trusted_device_entries: list[dict[str, object]] = []
+            self.trusted_device_search = QLineEdit()
+            self.trusted_device_search.setClearButtonEnabled(True)
+            self.trusted_device_search.setPlaceholderText(
+                "Filtrar por nombre, tipo, IP o MAC..."
+            )
+            self.trusted_device_search.textChanged.connect(self._filter_trusted_devices)
+            self.trusted_device_count = QLabel()
+            self.trusted_device_count.setStyleSheet(f"color: {MUTED};")
             self.trusted_device_combo = QComboBox()
             self.trusted_role_combo = QComboBox()
             for role, label in (
@@ -230,6 +254,9 @@ else:
             role_layout.addWidget(self.save_trusted_role_button)
             layout.addWidget(trusted_title)
             layout.addWidget(trusted_description)
+            layout.addWidget(QLabel("Buscar dispositivo de confianza"))
+            layout.addWidget(self.trusted_device_search)
+            layout.addWidget(self.trusted_device_count)
             layout.addWidget(self.trusted_device_info)
             layout.addWidget(device_name_label)
             layout.addWidget(self.trusted_name_input)
@@ -238,9 +265,19 @@ else:
             return page
 
         def _refresh_trusted_devices(self) -> None:
-            entries = self.monitor.database.list_baseline()
+            self.trusted_device_entries = self.monitor.database.list_baseline()
+            self._filter_trusted_devices()
+
+        def _filter_trusted_devices(self, *_args) -> None:
+            current_entry = self.trusted_device_combo.currentData()
+            selected_ip = current_entry.get("ip_address") if current_entry else None
+            query = self.trusted_device_search.text()
+            filtered_entries = [
+                entry for entry in self.trusted_device_entries
+                if trusted_device_matches(entry, query)
+            ]
             self.trusted_device_combo.clear()
-            for entry in entries:
+            for entry in filtered_entries:
                 label = trusted_device_label(entry)
                 self.trusted_device_combo.addItem(label, entry)
                 self.trusted_device_combo.setItemData(
@@ -248,14 +285,45 @@ else:
                     label,
                     Qt.ItemDataRole.ToolTipRole,
                 )
-            self.save_trusted_role_button.setEnabled(bool(entries))
+            if selected_ip:
+                for index, entry in enumerate(filtered_entries):
+                    if entry["ip_address"] == selected_ip:
+                        self.trusted_device_combo.setCurrentIndex(index)
+                        break
+            has_results = bool(filtered_entries)
+            self.save_trusted_role_button.setEnabled(has_results)
+            self.trusted_device_count.setText(
+                f"{len(filtered_entries)} de {len(self.trusted_device_entries)} dispositivos"
+            )
+            if not has_results:
+                if self.trusted_device_entries:
+                    self.trusted_device_info.setText(
+                        "No hay dispositivos que coincidan con el filtro. "
+                        "Prueba con otro nombre, tipo, IP o MAC."
+                    )
+                else:
+                    self.trusted_device_info.setText(
+                        "No hay dispositivos en la línea base. Escanea la red primero."
+                    )
             self._select_trusted_device_role()
 
         def _select_trusted_device_role(self, *_args) -> None:
             entry = self.trusted_device_combo.currentData()
             if not entry:
                 self.trusted_name_input.clear()
-                self.trusted_device_info.setText("No hay dispositivos en la línea base. Escanea la red primero.")
+                if self.trusted_device_entries and self.trusted_device_search.text().strip():
+                    self.trusted_device_info.setText(
+                        "No hay dispositivos que coincidan con el filtro. "
+                        "Prueba con otro nombre, tipo, IP o MAC."
+                    )
+                elif self.trusted_device_entries:
+                    self.trusted_device_info.setText(
+                        "No hay dispositivos que coincidan con el filtro."
+                    )
+                else:
+                    self.trusted_device_info.setText(
+                        "No hay dispositivos en la línea base. Escanea la red primero."
+                    )
                 return
             role_index = self.trusted_role_combo.findData(entry["device_type"])
             if role_index >= 0:

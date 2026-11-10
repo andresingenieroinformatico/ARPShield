@@ -7,7 +7,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from arpshield.ui.main_window import trusted_device_label
+from arpshield.ui.main_window import trusted_device_label, trusted_device_matches
 
 
 class TrustedDeviceLabelTests(unittest.TestCase):
@@ -33,6 +33,20 @@ class TrustedDeviceLabelTests(unittest.TestCase):
 
         self.assertIn("Servidor DNS (sin nombre)", label)
         self.assertIn("IP 192.168.1.53", label)
+
+    def test_device_filter_matches_alias_role_ip_and_mac_case_insensitively(self):
+        entry = {
+            "hostname": "Impresora recepción",
+            "device_type": "KNOWN_HOST",
+            "ip_address": "192.168.1.25",
+            "mac_address": "00:11:22:33:44:55",
+        }
+
+        for query in ("impresora", "Equipo conocido", "192.168.1.25", "00:11:22:33:44:55"):
+            with self.subTest(query=query):
+                self.assertTrue(trusted_device_matches(entry, query))
+
+        self.assertFalse(trusted_device_matches(entry, "Servidor DNS"))
 
 
 if __name__ == "__main__":
