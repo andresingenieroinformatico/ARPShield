@@ -8,7 +8,11 @@ import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+<<<<<<< HEAD
 if TYPE_CHECKING:
+=======
+try:
+>>>>>>> 4551bfa7299551eff2751d0ecb43c9b37412521b
     from PySide6.QtCore import QProcess, QTimer, Qt
     from PySide6.QtGui import QColor
     from PySide6.QtWidgets import (
@@ -24,6 +28,7 @@ if TYPE_CHECKING:
         QVBoxLayout,
         QWidget,
     )
+<<<<<<< HEAD
     _PYSIDE6_AVAILABLE = True
 else:
     try:
@@ -52,6 +57,18 @@ FIELD_COUNT = 17
 # Límite de buffer circular alineado con OWASP ASVS V5.1.4 (STRIDE #1 - Mitigación DoS)
 MAX_PACKET_ROWS = 1000
 UI_FLUSH_INTERVAL_MS = 100
+=======
+except ModuleNotFoundError:  # pragma: no cover
+    QProcess = QTimer = Qt = None
+    QColor = None
+    QComboBox = QFileDialog = QHBoxLayout = QHeaderView = QLabel = QLineEdit = QPushButton = None
+    QTableWidget = QTableWidgetItem = QVBoxLayout = QWidget = None
+
+
+FIELD_COUNT = 17
+MAX_PACKET_ROWS = 500
+PACKET_BATCH_SIZE = 50
+>>>>>>> 4551bfa7299551eff2751d0ecb43c9b37412521b
 PACKET_COLUMNS = ["Hora", "N.º", "Protocolo", "IP origen", "IP destino", "MAC origen", "MAC destino", "Información"]
 
 
@@ -131,6 +148,7 @@ class TrafficViewerPanel(QWidget):
     def __init__(self, monitor=None):
         if not _PYSIDE6_AVAILABLE:
             raise ModuleNotFoundError("PySide6 no está instalado. Ejecuta: python -m pip install -r requirements.txt")
+<<<<<<< HEAD
         super().__init__()
         self.monitor = monitor
         self.tshark_path: str | None = None
@@ -141,6 +159,25 @@ class TrafficViewerPanel(QWidget):
         self._flush_timer = QTimer(self)
         self._flush_timer.setInterval(UI_FLUSH_INTERVAL_MS)
         self._flush_timer.timeout.connect(self._flush_pending_packets)
+=======
+else:
+    class TrafficViewerPanel(QWidget):
+        def __init__(self, monitor=None):
+            super().__init__()
+            self.monitor = monitor
+            self.tshark_path: str | None = None
+            self._mode = "idle"
+            self._stdout_buffer = ""
+            self._pending_rows: list[list[str]] = []
+            self.process = QProcess(self)
+            self.process.readyReadStandardOutput.connect(self._read_output)
+            self.process.readyReadStandardError.connect(self._read_error)
+            self.process.finished.connect(self._process_finished)
+            self.process.errorOccurred.connect(self._process_error)
+            self._flush_timer = QTimer(self)
+            self._flush_timer.setInterval(200)
+            self._flush_timer.timeout.connect(self._flush_pending_rows)
+>>>>>>> 4551bfa7299551eff2751d0ecb43c9b37412521b
 
         self.process = QProcess(self)
         self.process.readyReadStandardOutput.connect(self._read_output)
@@ -229,6 +266,7 @@ class TrafficViewerPanel(QWidget):
         layout.addWidget(self.packet_table, 1)
         self.refresh_interfaces()
 
+<<<<<<< HEAD
     def refresh_interfaces(self) -> None:
         self.tshark_path = find_tshark()
         self.interface_combo.clear()
@@ -236,10 +274,107 @@ class TrafficViewerPanel(QWidget):
             self.status_label.setText(
                 "TShark no aparece en PATH ni en las rutas habituales de Wireshark. "
                 "Reinicia VS Code si acabas de modificar PATH."
+=======
+            try:
+                result = subprocess.run(
+                    [self.tshark_path, "-D"],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    shell=False,
+                    check=False,
+                    timeout=15,
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                self.status_label.setText(f"No se pudo consultar TShark: {exc}")
+                self.start_button.setEnabled(False)
+                return
+
+            interfaces = parse_interfaces(result.stdout)
+            if result.returncode != 0:
+                details = result.stderr.strip() or result.stdout.strip() or "TShark terminó con error."
+                self.status_label.setText(f"Error al consultar interfaces (código {result.returncode}): {details}")
+                self.start_button.setEnabled(False)
+                return
+
+            for interface_id, name in interfaces:
+                self.interface_combo.addItem(f"{interface_id}. {name}", interface_id)
+            self.start_button.setEnabled(bool(interfaces))
+            if interfaces:
+                self.status_label.setText(f"TShark listo: {len(interfaces)} interfaces disponibles. Captura detenida.")
+            else:
+                self.status_label.setText("TShark está instalado, pero no hay interfaces de captura disponibles.")
+
+        def start_capture(self) -> None:
+            if self.process.state() != QProcess.ProcessState.NotRunning:
+                return
+            if not self.tshark_path or self.interface_combo.currentIndex() < 0:
+                self.status_label.setText("Selecciona una interfaz de captura válida.")
+                return
+
+            interface_id = self.interface_combo.currentData()
+            display_filter = self.filter_input.text().strip() or "arp or dns"
+            arguments = self._packet_arguments(display_filter)
+            arguments[2:2] = ["-i", str(interface_id)]
+            self._mode = "live"
+            self._stdout_buffer = ""
+            self._pending_rows.clear()
+            self.packet_table.setRowCount(0)
+            self._set_running(True)
+            self.status_label.setText(f"Capturando en {self.interface_combo.currentText()} · filtro: {display_filter}")
+            self.process.start(self.tshark_path, arguments)
+
+        @staticmethod
+        def _packet_arguments(display_filter: str) -> list[str]:
+            fields = [
+                "frame.time",
+                "frame.number",
+                "frame.protocols",
+                "eth.src",
+                "eth.dst",
+                "arp.opcode",
+                "arp.src.proto_ipv4",
+                "arp.src.hw_mac",
+                "arp.dst.proto_ipv4",
+                "arp.dst.hw_mac",
+                "dns.qry.name",
+                "dns.flags.response",
+                "dns.a",
+                "ip.src",
+                "ip.dst",
+                "ipv6.src",
+                "ipv6.dst",
+            ]
+            arguments = ["-l", "-n"]
+            if display_filter:
+                arguments.extend(["-Y", display_filter])
+            arguments.extend(["-T", "fields", "-E", "separator=\t", "-E", "occurrence=f"])
+            for field in fields:
+                arguments.extend(["-e", field])
+            return arguments
+
+        def stop_capture(self) -> None:
+            if self.process.state() != QProcess.ProcessState.NotRunning:
+                self.process.terminate()
+                if not self.process.waitForFinished(1500):
+                    self.process.kill()
+                self._read_output()
+                self._set_running(False)
+                self.status_label.setText(f"Captura detenida · {self.packet_table.rowCount()} paquetes visibles.")
+
+        def load_capture_file(self) -> None:
+            path, _ = QFileDialog.getOpenFileName(
+                self,
+                "Seleccionar captura PCAP",
+                str(Path.home()),
+                "Capturas de red (*.pcap *.pcapng)",
+>>>>>>> 4551bfa7299551eff2751d0ecb43c9b37412521b
             )
             self.start_button.setEnabled(False)
             return
 
+<<<<<<< HEAD
         try:
             result = subprocess.run(
                 [self.tshark_path, "-D"],
@@ -270,6 +405,59 @@ class TrafficViewerPanel(QWidget):
             self.status_label.setText(f"TShark listo: {len(interfaces)} interfaces disponibles. Captura detenida.")
         else:
             self.status_label.setText("TShark está instalado, pero no hay interfaces de captura disponibles.")
+=======
+            display_filter = self.filter_input.text().strip() or "arp or dns"
+            self._mode = "file"
+            self._stdout_buffer = ""
+            self._pending_rows.clear()
+            self.packet_table.setRowCount(0)
+            fields = self._packet_arguments(display_filter)
+            fields = fields[fields.index("-T") :]
+            self._set_running(True)
+            self.status_label.setText(f"Analizando {Path(path).name} · filtro: {display_filter}")
+            self.process.start(self.tshark_path, ["-n", "-r", path, "-Y", display_filter, *fields])
+
+        def _read_output(self) -> None:
+            text = bytes(self.process.readAllStandardOutput()).decode("utf-8", errors="replace")
+            if not text:
+                return
+            self._stdout_buffer += text
+            lines = self._stdout_buffer.splitlines(keepends=True)
+            self._stdout_buffer = ""
+            if lines and not lines[-1].endswith(("\n", "\r")):
+                self._stdout_buffer = lines.pop()
+            for line in lines:
+                row = packet_fields_to_row(line)
+                if row:
+                    self._pending_rows.append(row)
+                    if len(self._pending_rows) >= PACKET_BATCH_SIZE:
+                        self._flush_pending_rows()
+
+        def _flush_pending_rows(self) -> None:
+            if not self._pending_rows:
+                return
+
+            rows = self._pending_rows
+            self._pending_rows = []
+            excess = self.packet_table.rowCount() + len(rows) - MAX_PACKET_ROWS
+            self.packet_table.setUpdatesEnabled(False)
+            for _ in range(max(0, excess)):
+                self.packet_table.removeRow(0)
+
+            first_row = self.packet_table.rowCount()
+            self.packet_table.setRowCount(first_row + len(rows))
+            protocol_colors = {"ARP": "#f39c12", "DNS": "#a45bb5"}
+            for row_offset, values in enumerate(rows):
+                row_index = first_row + row_offset
+                for column, value in enumerate(values):
+                    item = QTableWidgetItem(value)
+                    item.setToolTip(value)
+                    if column == 2:
+                        item.setForeground(QColor(protocol_colors.get(value, "#f4f5fb")))
+                    self.packet_table.setItem(row_index, column, item)
+            self.packet_table.setUpdatesEnabled(True)
+            self.packet_table.scrollToBottom()
+>>>>>>> 4551bfa7299551eff2751d0ecb43c9b37412521b
 
     @staticmethod
     def _live_capture_filter(display_filter: str) -> str | None:
@@ -342,8 +530,17 @@ class TrafficViewerPanel(QWidget):
             if not self.process.waitForFinished(1500):
                 self.process.kill()
             self._read_output()
+<<<<<<< HEAD
             self._flush_pending_packets()
             self._flush_timer.stop()
+=======
+            self._read_error()
+            if self._stdout_buffer:
+                row = packet_fields_to_row(self._stdout_buffer)
+                if row:
+                    self._pending_rows.append(row)
+                self._stdout_buffer = ""
+>>>>>>> 4551bfa7299551eff2751d0ecb43c9b37412521b
             self._set_running(False)
             self.status_label.setText(f"Captura detenida · {self.packet_table.rowCount()} paquetes visibles.")
 
@@ -364,6 +561,7 @@ class TrafficViewerPanel(QWidget):
         if not self.tshark_path:
             return
 
+<<<<<<< HEAD
         display_filter = self.filter_input.text().strip() or "arp or dns"
         self._mode = "file"
         self._stdout_buffer = ""
@@ -463,3 +661,15 @@ class TrafficViewerPanel(QWidget):
         self.start_button.setEnabled(not running and self.interface_combo.count() > 0)
         self.stop_button.setEnabled(running and self._mode == "live")
         self.open_capture_button.setEnabled(not running)
+=======
+        def _set_running(self, running: bool) -> None:
+            if running:
+                self._flush_timer.start()
+            else:
+                self._flush_timer.stop()
+                self._flush_pending_rows()
+            self.refresh_button.setEnabled(not running)
+            self.start_button.setEnabled(not running and self.interface_combo.count() > 0)
+            self.stop_button.setEnabled(running and self._mode == "live")
+            self.open_capture_button.setEnabled(not running)
+>>>>>>> 4551bfa7299551eff2751d0ecb43c9b37412521b

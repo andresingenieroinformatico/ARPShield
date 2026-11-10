@@ -59,6 +59,9 @@ class TrafficViewerTests(unittest.TestCase):
         self.assertEqual(row[3:5], ["192.168.1.10", "192.168.1.1"])
         self.assertIn("Solicitud ARP", row[7])
 
+    def test_packet_history_is_bounded_for_low_memory_systems(self):
+        self.assertEqual(MAX_PACKET_ROWS, 500)
+
 
 if __name__ == "__main__":
     unittest.main()

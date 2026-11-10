@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+<<<<<<< HEAD
 from collections import Counter
 from datetime import date, datetime, timedelta
 from typing import Any, TYPE_CHECKING
+=======
+from datetime import datetime, timedelta, timezone
+from typing import Any
+>>>>>>> 4551bfa7299551eff2751d0ecb43c9b37412521b
 
 if TYPE_CHECKING:
     from PySide6.QtCore import QPointF, QRectF, Qt
@@ -182,6 +187,9 @@ class TypeBreakdown(QWidget):
 
 
 class DashboardPanel(QWidget):
+    RECENT_ALERT_LIMIT = 100
+    TREND_DAYS = 12
+
     def __init__(self, monitor: Any):
         if not _PYSIDE6_AVAILABLE:
             raise ModuleNotFoundError("PySide6 no está instalado. Ejecuta: python -m pip install -r requirements.txt")
@@ -286,16 +294,12 @@ class DashboardPanel(QWidget):
         return card
 
     def refresh(self) -> None:
-        baseline = self.monitor.database.list_baseline()
-        alerts = self.monitor.database.list_alerts()
-
-        self.total_devices_label.setText(str(len(baseline)))
-        self.alerts_label.setText(str(len(alerts)))
-        self.high_severity_label.setText(
-            str(sum(1 for alert in alerts if alert.get("severity") in {"HIGH", "CRITICAL"}))
+        snapshot = self.monitor.database.dashboard_snapshot(
+            recent_limit=self.RECENT_ALERT_LIMIT,
+            trend_days=self.TREND_DAYS,
         )
-        self.baseline_label.setText(str(len(baseline)))
 
+<<<<<<< HEAD
         today = datetime.now().date()
         daily_counts: Counter[date] = Counter()
         for alert in alerts:
@@ -309,9 +313,20 @@ class DashboardPanel(QWidget):
         self.trend_chart.set_data(
             [day.strftime("%d %b") for day in dates],
             [daily_counts[day] for day in dates],
+=======
+        self.total_devices_label.setText(str(snapshot["baseline_count"]))
+        self.alerts_label.setText(str(snapshot["alert_count"]))
+        self.high_severity_label.setText(str(snapshot["high_severity_count"]))
+        self.baseline_label.setText(str(snapshot["baseline_count"]))
+
+        today = datetime.now(timezone.utc).date()
+        dates = [today - timedelta(days=offset) for offset in range(self.TREND_DAYS - 1, -1, -1)]
+        self.trend_chart.set_data(
+            [date.strftime("%d %b") for date in dates],
+            [snapshot["daily_counts"].get(date.isoformat(), 0) for date in dates],
+>>>>>>> 4551bfa7299551eff2751d0ecb43c9b37412521b
         )
 
-        type_counts = Counter(str(alert.get("alert_type", "OTHER")) for alert in alerts)
         type_names = {
             "GATEWAY_SPOOFING": "Suplantación gateway",
             "MULTIPLE_IPS_PER_MAC": "Múltiples IP por MAC",
@@ -321,11 +336,16 @@ class DashboardPanel(QWidget):
         colors = TypeBreakdown.COLORS
         categories = [
             (type_names.get(name, name), count, colors[index % len(colors)])
-            for index, (name, count) in enumerate(type_counts.most_common(5))
+            for index, (name, count) in enumerate(
+                sorted(snapshot["alert_type_counts"], key=lambda item: item[1], reverse=True)[:5]
+            )
+            if count
         ]
         self.type_chart.set_data(categories)
 
+        alerts = snapshot["recent_alerts"]
         self.alert_table.setRowCount(len(alerts))
+        self.alert_table.setUpdatesEnabled(False)
         for row_index, alert in enumerate(alerts):
             values = [
                 str(alert.get("timestamp_utc", "--")),
@@ -341,3 +361,4 @@ class DashboardPanel(QWidget):
                     severity_colors = {"LOW": GREEN, "MEDIUM": ORANGE, "HIGH": RED, "CRITICAL": RED}
                     item.setForeground(QColor(severity_colors.get(value, MUTED)))
                 self.alert_table.setItem(row_index, column, item)
+        self.alert_table.setUpdatesEnabled(True)

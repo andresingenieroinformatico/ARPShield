@@ -138,6 +138,7 @@ class MainWindow(QMainWindow):
         content_layout.addWidget(topbar)
         content_layout.addWidget(self.pages, 1)
 
+<<<<<<< HEAD
         root_layout.addWidget(sidebar)
         root_layout.addWidget(content, 1)
         self.setCentralWidget(root)
@@ -146,6 +147,22 @@ class MainWindow(QMainWindow):
         self.traffic_nav.clicked.connect(lambda: self._show_page(1, "Monitor de red  /  Tráfico"))
         self.settings_nav.clicked.connect(lambda: self._show_page(2, "ARPShield  /  Ajustes"))
         self._show_page(0, "Dashboard  /  Resumen")
+=======
+            self.refresh_timer = QTimer(self)
+            self.refresh_timer.setInterval(15000)
+            self.refresh_timer.timeout.connect(self._refresh_visible_dashboard)
+            self.refresh_timer.start()
+
+        def _refresh_visible_dashboard(self) -> None:
+            if self.pages.currentIndex() == 0:
+                self.dashboard_widget.refresh()
+
+        def _nav_button(self, text: str, page_name: str) -> QPushButton:
+            button = QPushButton(text)
+            button.setProperty("pageName", page_name)
+            button.setMinimumHeight(44)
+            return button
+>>>>>>> 4551bfa7299551eff2751d0ecb43c9b37412521b
 
         self.refresh_timer = QTimer(self)
         self.refresh_timer.setInterval(5000)
@@ -196,6 +213,7 @@ class MainWindow(QMainWindow):
             )
             table.setRowHidden(row, not visible)
 
+<<<<<<< HEAD
     def scan_network(self) -> None:
         try:
             entries = self.monitor.refresh_baseline()
@@ -204,6 +222,17 @@ class MainWindow(QMainWindow):
             return
         self.dashboard_widget.refresh()
         self.status_label.setText(f"●  {len(entries)} dispositivos en línea base")
+=======
+        def _show_page(self, index: int, breadcrumb: str) -> None:
+            self.pages.setCurrentIndex(index)
+            self.breadcrumb_label.setText(breadcrumb)
+            if index == 0:
+                self.dashboard_widget.refresh()
+            for button in (self.dashboard_nav, self.traffic_nav, self.settings_nav):
+                button.setStyleSheet("")
+            active_button = (self.dashboard_nav, self.traffic_nav, self.settings_nav)[index]
+            active_button.setStyleSheet("background: #292b3e; color: #3498db; border-left: 3px solid #3498db;")
+>>>>>>> 4551bfa7299551eff2751d0ecb43c9b37412521b
 
     def check_alerts(self) -> None:
         try:
@@ -218,5 +247,32 @@ class MainWindow(QMainWindow):
         else:
             self.status_label.setText("●  No se detectaron anomalías")
 
+<<<<<<< HEAD
     def apply_mitigation(self) -> None:
         self.status_label.setText("●  Mitigación requiere validar el gateway y permisos administrativos")
+=======
+        def scan_network(self) -> None:
+            try:
+                entries = self.monitor.refresh_baseline()
+            except OSError as exc:
+                QMessageBox.critical(self, "Error de escaneo", f"No se pudo actualizar la línea base:\n{exc}")
+                return
+            self._refresh_visible_dashboard()
+            self.status_label.setText(f"●  {len(entries)} dispositivos en línea base")
+
+        def check_alerts(self) -> None:
+            try:
+                alerts = self.monitor.check_for_anomalies()
+            except OSError as exc:
+                QMessageBox.critical(self, "Error de monitoreo", f"No se pudo comprobar la red:\n{exc}")
+                return
+            self._refresh_visible_dashboard()
+            if alerts:
+                self.status_label.setText(f"●  {len(alerts)} anomalías detectadas")
+                QMessageBox.information(self, "ARPShield", f"Se registraron {len(alerts)} alertas de posible suplantación ARP.")
+            else:
+                self.status_label.setText("●  No se detectaron anomalías")
+
+        def apply_mitigation(self) -> None:
+            self.status_label.setText("●  Mitigación requiere validar el gateway y permisos administrativos")
+>>>>>>> 4551bfa7299551eff2751d0ecb43c9b37412521b
