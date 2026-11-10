@@ -120,6 +120,21 @@ class DatabaseManagerTests(unittest.TestCase):
                 "AA:BB:CC:DD:EE:FF",
             )
 
+    def test_update_baseline_device_persists_alias_and_role(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db = DatabaseManager(Path(tmp_dir) / "arpshield.db")
+            db.initialize()
+            db.add_baseline_entry("192.168.1.1", "00:11:22:33:44:55", "KNOWN_HOST")
+
+            db.update_baseline_device("192.168.1.1", "GATEWAY", "  Router principal  ")
+
+            entry = db.list_baseline()[0]
+            self.assertEqual(entry["hostname"], "Router principal")
+            self.assertEqual(entry["device_type"], "GATEWAY")
+
+            with self.assertRaises(ValueError):
+                db.update_baseline_device("192.168.1.1", "GATEWAY", "R" * 121)
+
     def test_add_alert_deduplicates_same_signal_within_30_seconds(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             db = DatabaseManager(Path(tmp_dir) / "arpshield.db")

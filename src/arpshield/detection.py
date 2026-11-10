@@ -235,11 +235,14 @@ class SpoofingDetector:
                 )
             elif arp_src_mac and eth_src and arp_src_mac != eth_src:
                 append_alert(
-                    "ARP_SPOOFING",
-                    "HIGH",
+                    "GATEWAY_SPOOFING"
+                    if baseline_type_by_ip.get(arp_src_ip) == "GATEWAY"
+                    else "ARP_SPOOFING",
+                    "HIGH" if baseline_type_by_ip.get(arp_src_ip) == "GATEWAY" else "MEDIUM",
                     eth_src,
                     arp_src_ip,
-                    f"La MAC Ethernet de origen ({eth_src}) no coincide con la MAC anunciada en ARP ({arp_src_mac}).",
+                    f"La MAC Ethernet de origen ({eth_src}) no coincide con la MAC anunciada en ARP "
+                    f"({arp_src_mac}) para {arp_src_ip}. Verifica la topología y el equipo que originó la trama.",
                 )
 
         if "arp" not in protocols and ip_src in baseline_by_ip and eth_src and eth_src != baseline_by_ip[ip_src]:
