@@ -45,6 +45,8 @@ Los detectores comparan anuncios IP/MAC y gateways IPv6 con la línea base; comp
 
 Esto **no garantiza detectar todo spoofing**. Una captura en un PC de una red conmutada puede no ver paquetes unicast entre otros equipos; la coexistencia de varios servidores DHCP/DHCPv6 puede ser legítima; DNS cifrado (DoH/DoT), redes Wi-Fi que requieren modo monitor, ataques fuera de la interfaz, suplantaciones de aplicación/TLS y protocolos que no aparezcan en la captura quedan fuera. El filtro elegido también limita la visibilidad. Usa un puerto espejo/TAP o sensores en los segmentos pertinentes y configura referencias confiables para elevar la cobertura. Las alertas indican señales sospechosas, no una prueba definitiva de intrusión.
 
+En Windows, ARPShield relaciona las interfaces de Npcap con adaptadores físicos y muestra su estado, excluyendo miniports WAN y fuentes remotas no configuradas. Para una LAN cableada, selecciona el adaptador Ethernet físico; si no aparece, verifica que haya una tarjeta conectada/habilitada, su controlador y Npcap. Si la captura funciona pero no muestra tráfico de otros dispositivos, es una limitación normal de los switches: configura port mirroring/SPAN o usa un TAP de red. ARPShield no puede observar paquetes que el adaptador no recibe.
+
 ## Uso en equipos con recursos limitados
 
 La interfaz limita el historial visible a los últimos 500 paquetes y 100 alertas, actualiza la tabla de paquetes por lotes y consulta estadísticas agregadas para el dashboard. El panel se actualiza cada 15 segundos solo cuando está visible. Estos límites reducen el consumo de memoria y CPU cuando hay historial extenso; no limitan los registros que ya están guardados en SQLite.
