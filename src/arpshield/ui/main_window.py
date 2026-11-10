@@ -133,9 +133,13 @@ else:
             self._show_page(0, "Dashboard  /  Resumen")
 
             self.refresh_timer = QTimer(self)
-            self.refresh_timer.setInterval(5000)
-            self.refresh_timer.timeout.connect(self.dashboard_widget.refresh)
+            self.refresh_timer.setInterval(15000)
+            self.refresh_timer.timeout.connect(self._refresh_visible_dashboard)
             self.refresh_timer.start()
+
+        def _refresh_visible_dashboard(self) -> None:
+            if self.pages.currentIndex() == 0:
+                self.dashboard_widget.refresh()
 
         def _nav_button(self, text: str, page_name: str) -> QPushButton:
             button = QPushButton(text)
@@ -166,6 +170,8 @@ else:
         def _show_page(self, index: int, breadcrumb: str) -> None:
             self.pages.setCurrentIndex(index)
             self.breadcrumb_label.setText(breadcrumb)
+            if index == 0:
+                self.dashboard_widget.refresh()
             for button in (self.dashboard_nav, self.traffic_nav, self.settings_nav):
                 button.setStyleSheet("")
             active_button = (self.dashboard_nav, self.traffic_nav, self.settings_nav)[index]
@@ -187,7 +193,7 @@ else:
             except OSError as exc:
                 QMessageBox.critical(self, "Error de escaneo", f"No se pudo actualizar la línea base:\n{exc}")
                 return
-            self.dashboard_widget.refresh()
+            self._refresh_visible_dashboard()
             self.status_label.setText(f"●  {len(entries)} dispositivos en línea base")
 
         def check_alerts(self) -> None:
@@ -196,7 +202,7 @@ else:
             except OSError as exc:
                 QMessageBox.critical(self, "Error de monitoreo", f"No se pudo comprobar la red:\n{exc}")
                 return
-            self.dashboard_widget.refresh()
+            self._refresh_visible_dashboard()
             if alerts:
                 self.status_label.setText(f"●  {len(alerts)} anomalías detectadas")
                 QMessageBox.information(self, "ARPShield", f"Se registraron {len(alerts)} alertas de posible suplantación ARP.")
