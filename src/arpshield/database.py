@@ -145,6 +145,65 @@ class DatabaseManager:
         finally:
             connection.close()
 
+    def dashboard_snapshot(self, recent_limit: int = 100, trend_days: int = 12) -> dict[str, Any]:
+        if recent_limit < 1 or trend_days < 1:
+            raise ValueError("recent_limit y trend_days deben ser mayores que cero")
+
+        connection = self.connect()
+        try:
+            baseline_count = connection.execute(
+                "SELECT COUNT(*) FROM trusted_baseline"
+            ).fetchone()[0]
+            summary = connection.execute(
+                """
+                SELECT
+                    COUNT(*) AS alert_count,
+                    COALESCE(SUM(CASE WHEN severity IN ('HIGH', 'CRITICAL') THEN 1 ELSE 0 END), 0)
+                        AS high_severity_count,
+                    COALESCE(SUM(CASE WHEN alert_type = 'GATEWAY_SPOOFING' THEN 1 ELSE 0 END), 0)
+                        AS gateway_spoofing_count,
+                    COALESCE(SUM(CASE WHEN alert_type = 'MULTIPLE_IPS_PER_MAC' THEN 1 ELSE 0 END), 0)
+                        AS multiple_ips_count,
+                    COALESCE(SUM(CASE WHEN alert_type = 'ARP_BURST_UNSOLICITED' THEN 1 ELSE 0 END), 0)
+                        AS arp_burst_count,
+                    COALESCE(SUM(CASE WHEN alert_type = 'DNS_SPOOFING' THEN 1 ELSE 0 END), 0)
+                        AS dns_spoofing_count
+                FROM security_alerts
+                """
+            ).fetchone()
+            daily_counts = connection.execute(
+                """
+                SELECT date(timestamp_utc) AS alert_date, COUNT(*) AS count
+                FROM security_alerts
+                WHERE timestamp_utc >= datetime('now', ?)
+                GROUP BY date(timestamp_utc)
+                """,
+                (f"-{trend_days - 1} days",),
+            ).fetchall()
+            recent_alerts = connection.execute(
+                """
+                SELECT * FROM security_alerts
+                ORDER BY timestamp_utc DESC, id DESC
+                LIMIT ?
+                """,
+                (recent_limit,),
+            ).fetchall()
+            return {
+                "baseline_count": baseline_count,
+                "alert_count": summary["alert_count"],
+                "high_severity_count": summary["high_severity_count"],
+                "alert_type_counts": [
+                    ("GATEWAY_SPOOFING", summary["gateway_spoofing_count"]),
+                    ("MULTIPLE_IPS_PER_MAC", summary["multiple_ips_count"]),
+                    ("ARP_BURST_UNSOLICITED", summary["arp_burst_count"]),
+                    ("DNS_SPOOFING", summary["dns_spoofing_count"]),
+                ],
+                "daily_counts": {row["alert_date"]: row["count"] for row in daily_counts},
+                "recent_alerts": [dict(row) for row in recent_alerts],
+            }
+        finally:
+            connection.close()
+
     def table_names(self) -> list[str]:
         connection = self.connect()
         try:

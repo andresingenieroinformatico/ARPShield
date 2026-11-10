@@ -7,7 +7,7 @@ import subprocess
 from pathlib import Path
 
 try:
-    from PySide6.QtCore import QProcess, Qt
+    from PySide6.QtCore import QProcess, QTimer, Qt
     from PySide6.QtGui import QColor
     from PySide6.QtWidgets import (
         QComboBox,
@@ -23,14 +23,15 @@ try:
         QWidget,
     )
 except ModuleNotFoundError:  # pragma: no cover
-    QProcess = Qt = None
+    QProcess = QTimer = Qt = None
     QColor = None
     QComboBox = QFileDialog = QHBoxLayout = QHeaderView = QLabel = QLineEdit = QPushButton = None
     QTableWidget = QTableWidgetItem = QVBoxLayout = QWidget = None
 
 
 FIELD_COUNT = 17
-MAX_PACKET_ROWS = 3000
+MAX_PACKET_ROWS = 500
+PACKET_BATCH_SIZE = 50
 PACKET_COLUMNS = ["Hora", "N.º", "Protocolo", "IP origen", "IP destino", "MAC origen", "MAC destino", "Información"]
 
 
@@ -118,11 +119,15 @@ else:
             self.tshark_path: str | None = None
             self._mode = "idle"
             self._stdout_buffer = ""
+            self._pending_rows: list[list[str]] = []
             self.process = QProcess(self)
             self.process.readyReadStandardOutput.connect(self._read_output)
             self.process.readyReadStandardError.connect(self._read_error)
             self.process.finished.connect(self._process_finished)
             self.process.errorOccurred.connect(self._process_error)
+            self._flush_timer = QTimer(self)
+            self._flush_timer.setInterval(200)
+            self._flush_timer.timeout.connect(self._flush_pending_rows)
 
             layout = QVBoxLayout(self)
             layout.setContentsMargins(22, 18, 22, 18)
@@ -259,6 +264,7 @@ else:
             arguments[2:2] = ["-i", str(interface_id)]
             self._mode = "live"
             self._stdout_buffer = ""
+            self._pending_rows.clear()
             self.packet_table.setRowCount(0)
             self._set_running(True)
             self.status_label.setText(f"Capturando en {self.interface_combo.currentText()} · filtro: {display_filter}")
@@ -322,6 +328,7 @@ else:
             display_filter = self.filter_input.text().strip() or "arp or dns"
             self._mode = "file"
             self._stdout_buffer = ""
+            self._pending_rows.clear()
             self.packet_table.setRowCount(0)
             fields = self._packet_arguments(display_filter)
             fields = fields[fields.index("-T") :]
@@ -341,20 +348,33 @@ else:
             for line in lines:
                 row = packet_fields_to_row(line)
                 if row:
-                    self._append_packet(row)
+                    self._pending_rows.append(row)
+                    if len(self._pending_rows) >= PACKET_BATCH_SIZE:
+                        self._flush_pending_rows()
 
-        def _append_packet(self, values: list[str]) -> None:
-            if self.packet_table.rowCount() >= MAX_PACKET_ROWS:
+        def _flush_pending_rows(self) -> None:
+            if not self._pending_rows:
+                return
+
+            rows = self._pending_rows
+            self._pending_rows = []
+            excess = self.packet_table.rowCount() + len(rows) - MAX_PACKET_ROWS
+            self.packet_table.setUpdatesEnabled(False)
+            for _ in range(max(0, excess)):
                 self.packet_table.removeRow(0)
-            row_index = self.packet_table.rowCount()
-            self.packet_table.insertRow(row_index)
-            for column, value in enumerate(values):
-                item = QTableWidgetItem(value)
-                item.setToolTip(value)
-                if column == 2:
-                    protocol_colors = {"ARP": "#f39c12", "DNS": "#a45bb5"}
-                    item.setForeground(QColor(protocol_colors.get(value, "#f4f5fb")))
-                self.packet_table.setItem(row_index, column, item)
+
+            first_row = self.packet_table.rowCount()
+            self.packet_table.setRowCount(first_row + len(rows))
+            protocol_colors = {"ARP": "#f39c12", "DNS": "#a45bb5"}
+            for row_offset, values in enumerate(rows):
+                row_index = first_row + row_offset
+                for column, value in enumerate(values):
+                    item = QTableWidgetItem(value)
+                    item.setToolTip(value)
+                    if column == 2:
+                        item.setForeground(QColor(protocol_colors.get(value, "#f4f5fb")))
+                    self.packet_table.setItem(row_index, column, item)
+            self.packet_table.setUpdatesEnabled(True)
             self.packet_table.scrollToBottom()
 
         def _read_error(self) -> None:
@@ -368,7 +388,7 @@ else:
             if self._stdout_buffer:
                 row = packet_fields_to_row(self._stdout_buffer)
                 if row:
-                    self._append_packet(row)
+                    self._pending_rows.append(row)
                 self._stdout_buffer = ""
             self._set_running(False)
             if exit_code:
@@ -383,6 +403,11 @@ else:
             self.status_label.setText(f"No se pudo iniciar TShark: {self.process.errorString()}")
 
         def _set_running(self, running: bool) -> None:
+            if running:
+                self._flush_timer.start()
+            else:
+                self._flush_timer.stop()
+                self._flush_pending_rows()
             self.refresh_button.setEnabled(not running)
             self.start_button.setEnabled(not running and self.interface_combo.count() > 0)
             self.stop_button.setEnabled(running and self._mode == "live")

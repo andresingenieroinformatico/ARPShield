@@ -7,7 +7,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from arpshield.ui.traffic_viewer import PACKET_COLUMNS, packet_fields_to_row, parse_interfaces
+from arpshield.ui.traffic_viewer import MAX_PACKET_ROWS, PACKET_COLUMNS, packet_fields_to_row, parse_interfaces
 
 
 class TrafficViewerTests(unittest.TestCase):
@@ -53,6 +53,9 @@ class TrafficViewerTests(unittest.TestCase):
         self.assertEqual(row[2], "ARP")
         self.assertEqual(row[3:5], ["192.168.1.10", "192.168.1.1"])
         self.assertIn("Solicitud ARP", row[7])
+
+    def test_packet_history_is_bounded_for_low_memory_systems(self):
+        self.assertEqual(MAX_PACKET_ROWS, 500)
 
 
 if __name__ == "__main__":

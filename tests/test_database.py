@@ -48,6 +48,32 @@ class DatabaseManagerTests(unittest.TestCase):
             self.assertEqual(len(alerts), 1)
             self.assertEqual(alerts[0]["alert_type"], "GATEWAY_SPOOFING")
 
+    def test_dashboard_snapshot_aggregates_and_limits_recent_alerts(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db = DatabaseManager(Path(tmp_dir) / "arpshield.db")
+            db.initialize()
+            db.add_baseline_entry("192.168.1.1", "00:11:22:33:44:55", "GATEWAY")
+            db.add_alert("GATEWAY_SPOOFING", "HIGH", "AA:BB:CC:DD:EE:FF", "192.168.1.1", 1, "Cambio de MAC")
+            db.add_alert("DNS_SPOOFING", "CRITICAL", "AA:BB:CC:DD:EE:00", "192.168.1.2", 1, "Respuesta inesperada")
+            db.add_alert("DNS_SPOOFING", "LOW", "AA:BB:CC:DD:EE:01", "192.168.1.3", 1, "Alerta de prueba")
+
+            snapshot = db.dashboard_snapshot(recent_limit=2, trend_days=12)
+
+            self.assertEqual(snapshot["baseline_count"], 1)
+            self.assertEqual(snapshot["alert_count"], 3)
+            self.assertEqual(snapshot["high_severity_count"], 2)
+            self.assertEqual(dict(snapshot["alert_type_counts"])["DNS_SPOOFING"], 2)
+            self.assertEqual(len(snapshot["recent_alerts"]), 2)
+            self.assertEqual(sum(snapshot["daily_counts"].values()), 3)
+
+    def test_dashboard_snapshot_rejects_non_positive_limits(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db = DatabaseManager(Path(tmp_dir) / "arpshield.db")
+            db.initialize()
+
+            with self.assertRaises(ValueError):
+                db.dashboard_snapshot(recent_limit=0)
+
 
 class ThreatMonitorTests(unittest.TestCase):
     def test_discover_local_network_handles_windows_arp_output(self):
