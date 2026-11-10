@@ -250,6 +250,7 @@ else:
             self.monitor = monitor
             self.tshark_path: str | None = None
             self._mode = "idle"
+            self._capture_source = "TShark"
             self._stdout_buffer = ""
             self._pending_rows: list[list[str]] = []
             self._detected_alert_count = 0
@@ -465,6 +466,7 @@ else:
             display_filter = self.filter_input.text().strip() or DEFAULT_CAPTURE_FILTER
             arguments = self._live_capture_arguments(interface_name, display_filter)
             self._mode = "live"
+            self._capture_source = "Captura en vivo (TShark)"
             self._stdout_buffer = ""
             self._pending_rows.clear()
             self._detected_alert_count = 0
@@ -488,7 +490,7 @@ else:
             arguments = ["-l", "-n"]
             if display_filter:
                 arguments.extend(["-Y", display_filter])
-            arguments.extend(["-T", "fields", "-E", "separator=\t", "-E", "occurrence=f"])
+            arguments.extend(["-T", "fields", "-E", "separator=\t", "-E", "occurrence=a"])
             for field in CAPTURE_FIELDS:
                 arguments.extend(["-e", field])
             return arguments
@@ -554,6 +556,7 @@ else:
             display_filter = self.filter_input.text().strip() or DEFAULT_CAPTURE_FILTER
 >>>>>>> 1fc77c61331b7cfe33e18e96de74b7c08cd541b9
             self._mode = "file"
+            self._capture_source = "Archivo PCAP/PCAPNG"
             self._stdout_buffer = ""
             self._pending_rows.clear()
             self._detected_alert_count = 0
@@ -590,7 +593,10 @@ else:
             if not self.monitor or self._detection_persistence_error:
                 return
             try:
-                alerts = self.monitor.analyze_capture_record(line)
+                alerts = self.monitor.analyze_capture_record(
+                    line,
+                    capture_source=self._capture_source,
+                )
             except (OSError, sqlite3.Error) as exc:
                 self._detection_persistence_error = True
                 self.status_label.setText(f"Error guardando alertas de detección: {exc}")

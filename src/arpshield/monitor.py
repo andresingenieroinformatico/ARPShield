@@ -135,18 +135,38 @@ class ThreatMonitor:
                         if recorded.get("device_type") == "GATEWAY"
                         else "ARP_SPOOFING"
                     ),
-                    "severity": "HIGH",
+                    "severity": "HIGH" if recorded.get("device_type") == "GATEWAY" else "MEDIUM",
                     "attacker_mac": item["mac_address"].upper(),
                     "spoofed_ip": item["ip_address"],
                     "packet_count": 1,
-                    "evidence_summary": f"La MAC {item['mac_address']} no coincide con la línea base registrada para {item['ip_address']}",
+                    "evidence_summary": (
+                        f"La MAC {item['mac_address']} no coincide con la línea base registrada para "
+                        f"{item['ip_address']}. Verifica que la asociación confiable no haya cambiado."
+                    ),
+                    "evidence_details": {
+                        "capture_source": "Tabla ARP local",
+                        "observed_ip": item["ip_address"],
+                        "observed_mac": item["mac_address"].upper(),
+                        "baseline_mac": recorded["mac_address"],
+                        "device_type": recorded.get("device_type", "KNOWN_HOST"),
+                    },
                 }
-                alerts.append(alert)
-                self.database.add_alert(**alert)
+                if self.database.add_alert(**alert):
+                    alerts.append(alert)
         return alerts
 
-    def analyze_capture_record(self, capture_record: str) -> list[dict[str, Any]]:
-        alerts = self.detector.analyze(capture_record, self._trusted_baseline)
-        for alert in alerts:
-            self.database.add_alert(**alert)
-        return alerts
+    def analyze_capture_record(
+        self,
+        capture_record: str,
+        capture_source: str = "TShark",
+    ) -> list[dict[str, Any]]:
+        alerts = self.detector.analyze(
+            capture_record,
+            self._trusted_baseline,
+            capture_source=capture_source,
+        )
+        return [
+            alert
+            for alert in alerts
+            if self.database.add_alert(**alert)
+        ]
