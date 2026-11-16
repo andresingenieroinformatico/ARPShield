@@ -223,7 +223,7 @@ class ThreatMonitorTests(unittest.TestCase):
             monitor = ThreatMonitor(db)
 
             with patch("subprocess.run", return_value=subprocess.CompletedProcess(args=["arp", "-a"], returncode=0, stdout=fake_output, stderr=b"")), patch.object(
-                monitor, "_get_default_interface_ip", return_value=None
+                monitor, "_get_active_interface_ips", return_value={"192.168.1.10"}
             ):
                 entries = monitor.discover_local_network()
 
@@ -248,7 +248,9 @@ class ThreatMonitorTests(unittest.TestCase):
                 return_value=subprocess.CompletedProcess(
                     args=["arp", "-a"], returncode=0, stdout=fake_output, stderr=b""
                 ),
-            ), patch.object(monitor, "_get_default_interface_ip", return_value=None):
+            ), patch.object(
+                monitor, "_get_active_interface_ips", return_value={"192.168.1.10"}
+            ):
                 baseline = monitor.refresh_baseline()
 
             self.assertEqual(baseline[0]["mac_address"], "00:11:22:33:44:55")
@@ -294,7 +296,9 @@ class ThreatMonitorTests(unittest.TestCase):
                 return_value=subprocess.CompletedProcess(
                     args=["arp", "-a"], returncode=0, stdout=fake_output, stderr=b""
                 ),
-            ), patch.object(monitor, "_get_default_interface_ip", return_value=None):
+            ), patch.object(
+                monitor, "_get_active_interface_ips", return_value={"192.168.1.10"}
+            ):
                 entries = monitor.discover_local_network()
 
             by_ip = {item["ip_address"]: item for item in entries}
@@ -320,10 +324,42 @@ class ThreatMonitorTests(unittest.TestCase):
                 return_value=subprocess.CompletedProcess(
                     args=["arp", "-a"], returncode=0, stdout=fake_output, stderr=b""
                 ),
-            ), patch.object(monitor, "_get_default_interface_ip", return_value="192.168.1.10"):
+            ), patch.object(
+                monitor, "_get_active_interface_ips", return_value={"192.168.1.10"}
+            ):
                 entries = monitor.discover_local_network()
 
             self.assertEqual([entry["ip_address"] for entry in entries], ["192.168.1.1"])
+
+    def test_discover_local_network_includes_active_virtual_laboratory_interface(self):
+        fake_output = (
+            "Interface: 192.168.20.144 --- 0x12\r\n"
+            "  192.168.20.1     00-11-22-33-44-55     dynamic\r\n"
+            "Interface: 192.168.56.1 --- 0x22\r\n"
+            "  192.168.56.100   AA-BB-CC-DD-EE-FF     dynamic\r\n"
+        ).encode("cp850")
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db = DatabaseManager(Path(tmp_dir) / "arpshield.db")
+            db.initialize()
+            monitor = ThreatMonitor(db)
+
+            with patch(
+                "subprocess.run",
+                return_value=subprocess.CompletedProcess(
+                    args=["arp", "-a"], returncode=0, stdout=fake_output, stderr=b""
+                ),
+            ), patch.object(
+                monitor,
+                "_get_active_interface_ips",
+                return_value={"192.168.20.144", "192.168.56.1"},
+            ):
+                entries = monitor.discover_local_network()
+
+            self.assertEqual(
+                {entry["ip_address"] for entry in entries},
+                {"192.168.20.1", "192.168.56.100"},
+            )
 
     def test_refresh_baseline_counts_latest_scan_without_counting_historical_baseline(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

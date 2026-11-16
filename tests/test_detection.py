@@ -27,6 +27,7 @@ def capture_record(**values: str) -> str:
     fields[5] = values.get("arp_opcode", "")
     fields[6] = values.get("arp_src_ip", "")
     fields[7] = values.get("arp_src_mac", "")
+    fields[8] = values.get("arp_dst_ip", "")
     fields[10] = values.get("dns_query", "")
     fields[11] = values.get("dns_response", "")
     fields[12] = values.get("dns_answer", "")
@@ -153,16 +154,44 @@ class SpoofingDetectionTests(unittest.TestCase):
         common = {
             "protocols": "eth:ip:udp:dns",
             "dns_query": "example.test",
-            "dns_response": "1",
             "dns_id": "0x1234",
-            "ip_dst": "192.168.1.10",
         }
         monitor.analyze_capture_record(
-            capture_record(**common, eth_src="00:11:22:33:44:53", dns_answer="203.0.113.10")
+            capture_record(
+                **common,
+                dns_response="0",
+                ip_src="192.168.1.10",
+                ip_dst="192.168.1.53",
+            )
+        )
+        monitor.analyze_capture_record(
+            capture_record(
+                **common,
+                dns_response="1",
+                ip_src="192.168.1.53",
+                ip_dst="192.168.1.10",
+                eth_src="00:11:22:33:44:53",
+                dns_answer="203.0.113.10",
+            )
+        )
+        monitor.analyze_capture_record(
+            capture_record(
+                **common,
+                dns_response="0",
+                ip_src="192.168.1.10",
+                ip_dst="192.168.1.53",
+            )
         )
 
         alerts = monitor.analyze_capture_record(
-            capture_record(**common, eth_src="AA:BB:CC:DD:EE:FF", dns_answer="203.0.113.99")
+            capture_record(
+                **common,
+                dns_response="1",
+                ip_src="192.168.1.53",
+                ip_dst="192.168.1.10",
+                eth_src="00:11:22:33:44:53",
+                dns_answer="203.0.113.99",
+            )
         )
 
         self.assertEqual(alerts[0]["alert_type"], "DNS_SPOOFING")
@@ -208,16 +237,44 @@ class SpoofingDetectionTests(unittest.TestCase):
         common = {
             "protocols": "eth:ip:udp:dns",
             "dns_query": "pool.example.test",
-            "dns_response": "1",
             "dns_id": "0x1234",
-            "ip_dst": "192.168.1.10",
         }
         monitor.analyze_capture_record(
-            capture_record(**common, eth_src="00:11:22:33:44:53", dns_answer="192.0.2.10,192.0.2.11")
+            capture_record(
+                **common,
+                dns_response="0",
+                ip_src="192.168.1.10",
+                ip_dst="192.168.1.53",
+            )
+        )
+        monitor.analyze_capture_record(
+            capture_record(
+                **common,
+                dns_response="1",
+                ip_src="192.168.1.53",
+                ip_dst="192.168.1.10",
+                eth_src="00:11:22:33:44:53",
+                dns_answer="192.0.2.10,192.0.2.11",
+            )
+        )
+        monitor.analyze_capture_record(
+            capture_record(
+                **common,
+                dns_response="0",
+                ip_src="192.168.1.10",
+                ip_dst="192.168.1.53",
+            )
         )
 
         alerts = monitor.analyze_capture_record(
-            capture_record(**common, eth_src="AA:BB:CC:DD:EE:FF", dns_answer="192.0.2.11,192.0.2.10")
+            capture_record(
+                **common,
+                dns_response="1",
+                ip_src="192.168.1.53",
+                ip_dst="192.168.1.10",
+                eth_src="AA:BB:CC:DD:EE:FF",
+                dns_answer="192.0.2.11,192.0.2.10",
+            )
         )
 
         self.assertEqual(alerts, [])
@@ -239,7 +296,7 @@ class SpoofingDetectionTests(unittest.TestCase):
             )
         )
 
-        self.assertEqual(alerts, [])
+        self.assertEqual(alerts[0]["alert_type"], "MDNS_SPOOFING")
 
     def test_dhcpv6_allowlist_uses_mac_not_ipv4_address(self):
         self.database.add_baseline_entry("192.168.1.1", "00:11:22:33:44:55", "DHCP_SERVER")
@@ -386,6 +443,197 @@ class SpoofingDetectionTests(unittest.TestCase):
         )
         self.assertTrue(any(a["alert_type"] == "MULTIPLE_IPS_PER_MAC" for a in multi_alerts))
 
+    def test_detects_unsolicited_arp_reply_without_baseline(self):
+        monitor = self._monitor()
+
+        alerts = monitor.analyze_capture_record(
+            capture_record(
+                protocols="eth:arp",
+                eth_src="AA:BB:CC:DD:EE:FF",
+                arp_opcode="2",
+                arp_src_ip="192.168.56.100",
+                arp_src_mac="AA:BB:CC:DD:EE:FF",
+                arp_dst_ip="192.168.56.1",
+            )
+        )
+
+        self.assertEqual(alerts[0]["alert_type"], "ARP_SPOOFING")
+        self.assertIn("sin solicitud", alerts[0]["evidence_summary"])
+
+    def test_detects_gratuitous_arp_reply_without_baseline(self):
+        monitor = self._monitor()
+
+        alerts = monitor.analyze_capture_record(
+            capture_record(
+                protocols="eth:arp",
+                eth_src="AA:BB:CC:DD:EE:FF",
+                arp_opcode="2",
+                arp_src_ip="192.168.56.100",
+                arp_src_mac="AA:BB:CC:DD:EE:FF",
+                arp_dst_ip="192.168.56.100",
+            )
+        )
+
+        self.assertEqual(alerts[0]["alert_type"], "ARP_SPOOFING")
+        self.assertIn("gratuita", alerts[0]["evidence_summary"])
+
+    def test_detects_ethernet_to_arp_sender_mac_mismatch_without_baseline(self):
+        monitor = self._monitor()
+
+        alerts = monitor.analyze_capture_record(
+            capture_record(
+                protocols="eth:arp",
+                eth_src="AA:BB:CC:DD:EE:FF",
+                arp_opcode="2",
+                arp_src_ip="192.168.56.100",
+                arp_src_mac="00:11:22:33:44:55",
+                arp_dst_ip="192.168.56.1",
+            )
+        )
+
+        self.assertEqual(alerts[0]["alert_type"], "ARP_SPOOFING")
+        self.assertIn("no coincide", alerts[0]["evidence_summary"])
+
+    def test_does_not_flag_arp_reply_correlated_with_observed_request(self):
+        monitor = self._monitor()
+        request = capture_record(
+            protocols="eth:arp",
+            arp_opcode="1",
+            arp_src_ip="192.168.56.1",
+            arp_dst_ip="192.168.56.100",
+        )
+        reply = capture_record(
+            protocols="eth:arp",
+            eth_src="AA:BB:CC:DD:EE:FF",
+            arp_opcode="2",
+            arp_src_ip="192.168.56.100",
+            arp_src_mac="AA:BB:CC:DD:EE:FF",
+            arp_dst_ip="192.168.56.1",
+        )
+
+        self.assertEqual(monitor.analyze_capture_record(request), [])
+        self.assertEqual(monitor.analyze_capture_record(reply), [])
+
+    def test_detects_dhcp_servers_on_cold_start(self):
+        monitor = self._monitor()
+
+        dhcp_alerts = monitor.analyze_capture_record(
+            capture_record(
+                protocols="eth:ip:udp:bootp:dhcp",
+                dhcp_message_type="2",
+                dhcp_server_id="192.168.56.100",
+                bootp_transaction_id="0xabc123",
+                eth_src="AA:BB:CC:DD:EE:FF",
+            )
+        )
+        dhcp_ack_alerts = monitor.analyze_capture_record(
+            capture_record(
+                protocols="eth:ip:udp:bootp:dhcp",
+                dhcp_message_type="5",
+                dhcp_server_id="192.168.56.101",
+                bootp_transaction_id="0xabc124",
+                eth_src="AA:BB:CC:DD:EE:01",
+            )
+        )
+        dhcpv6_alerts = monitor.analyze_capture_record(
+            capture_record(
+                protocols="eth:ipv6:udp:dhcpv6",
+                dhcpv6_message_type="2",
+                dhcpv6_transaction_id="0xdef456",
+                eth_src="AA:BB:CC:DD:EE:FF",
+                ip_src="fe80::100",
+            )
+        )
+        dhcpv6_reply_alerts = monitor.analyze_capture_record(
+            capture_record(
+                protocols="eth:ipv6:udp:dhcpv6",
+                dhcpv6_message_type="7",
+                dhcpv6_transaction_id="0xdef457",
+                eth_src="AA:BB:CC:DD:EE:01",
+                ip_src="fe80::101",
+            )
+        )
+
+        self.assertEqual(dhcp_alerts[0]["alert_type"], "DHCP_SPOOFING")
+        self.assertEqual(dhcp_ack_alerts[0]["alert_type"], "DHCP_SPOOFING")
+        self.assertEqual(dhcpv6_alerts[0]["alert_type"], "DHCPV6_SPOOFING")
+        self.assertEqual(dhcpv6_reply_alerts[0]["alert_type"], "DHCPV6_SPOOFING")
+
+    def test_detects_unsolicited_dns_response_without_baseline(self):
+        monitor = self._monitor()
+
+        alerts = monitor.analyze_capture_record(
+            capture_record(
+                protocols="eth:ip:udp:dns",
+                dns_query="lab.example",
+                dns_response="1",
+                dns_id="0x4242",
+                dns_answer="192.0.2.99",
+                ip_src="192.168.56.100",
+                ip_dst="192.168.56.1",
+                eth_src="AA:BB:CC:DD:EE:FF",
+            )
+        )
+
+        self.assertEqual(alerts[0]["alert_type"], "DNS_SPOOFING")
+        self.assertIn("no solicitada", alerts[0]["evidence_summary"])
+
+    def test_detects_untrusted_llmnr_and_nbns_responses_without_baseline(self):
+        monitor = self._monitor()
+
+        llmnr_alerts = monitor.analyze_capture_record(
+            capture_record(
+                protocols="eth:ip:udp:llmnr",
+                dns_query="workstation",
+                dns_response="1",
+                dns_id="0x0001",
+                dns_answer="192.168.56.100",
+                eth_src="AA:BB:CC:DD:EE:FF",
+                udp_source_port="5355",
+                udp_destination_port="5355",
+            )
+        )
+        mdns_alerts = monitor.analyze_capture_record(
+            capture_record(
+                protocols="eth:ip:udp:mdns",
+                dns_query="printer.local",
+                dns_response="1",
+                dns_id="0x0000",
+                dns_answer="192.168.56.101",
+                eth_src="AA:BB:CC:DD:EE:01",
+                udp_source_port="5353",
+                udp_destination_port="5353",
+            )
+        )
+        nbns_alerts = monitor.analyze_capture_record(
+            capture_record(
+                protocols="eth:ip:udp:nbns",
+                nbns_id="0x0002",
+                nbns_response="1",
+                nbns_name="WORKSTATION",
+                nbns_address="192.168.56.100",
+                eth_src="AA:BB:CC:DD:EE:FF",
+            )
+        )
+
+        self.assertEqual(llmnr_alerts[0]["alert_type"], "LLMNR_SPOOFING")
+        self.assertEqual(mdns_alerts[0]["alert_type"], "MDNS_SPOOFING")
+        self.assertEqual(nbns_alerts[0]["alert_type"], "NBNS_SPOOFING")
+
+    def test_router_advertisement_requires_untrusted_link_local_source(self):
+        monitor = self._monitor()
+
+        alerts = monitor.analyze_capture_record(
+            capture_record(
+                protocols="eth:ipv6:icmpv6",
+                eth_src="AA:BB:CC:DD:EE:FF",
+                icmpv6_type="134",
+                ip_src="2001:db8::1",
+            )
+        )
+
+        self.assertEqual(alerts, [])
+
     def test_detects_arp_reply_burst(self):
         monitor = self._monitor()
         alerts = []
@@ -407,12 +655,11 @@ class SpoofingDetectionTests(unittest.TestCase):
 
     def test_reset_detector_clears_correlation_state_before_a_new_capture(self):
         monitor = self._monitor()
-        first_record = capture_record(
+        request_record = capture_record(
             protocols="eth:arp",
-            eth_src="00:11:22:33:44:55",
-            arp_opcode="2",
-            arp_src_ip="192.168.1.25",
-            arp_src_mac="00:11:22:33:44:55",
+            arp_opcode="1",
+            arp_src_ip="192.168.1.10",
+            arp_dst_ip="192.168.1.25",
         )
         changed_record = capture_record(
             protocols="eth:arp",
@@ -420,12 +667,14 @@ class SpoofingDetectionTests(unittest.TestCase):
             arp_opcode="2",
             arp_src_ip="192.168.1.25",
             arp_src_mac="AA:BB:CC:DD:EE:FF",
+            arp_dst_ip="192.168.1.10",
         )
-        monitor.analyze_capture_record(first_record)
+        monitor.analyze_capture_record(request_record)
 
         monitor.reset_detector()
 
-        self.assertEqual(monitor.analyze_capture_record(changed_record), [])
+        alerts = monitor.analyze_capture_record(changed_record)
+        self.assertEqual(alerts[0]["alert_type"], "ARP_SPOOFING")
 
     def test_selects_untrusted_attacker_mac_when_attacker_responds_before_trusted_server(self):
         self.database.add_baseline_entry("192.168.1.1", "00:11:22:33:44:53", "GATEWAY")
@@ -433,24 +682,42 @@ class SpoofingDetectionTests(unittest.TestCase):
         common = {
             "protocols": "eth:ip:udp:dns",
             "dns_query": "bank.example.test",
-            "dns_response": "1",
             "dns_id": "0x9999",
-            "ip_dst": "192.168.1.10",
         }
+        monitor.analyze_capture_record(
+            capture_record(
+                **common,
+                dns_response="0",
+                ip_src="192.168.1.10",
+                ip_dst="192.168.1.66",
+            )
+        )
         first_alerts = monitor.analyze_capture_record(
             capture_record(
                 **common,
+                dns_response="1",
                 ip_src="192.168.1.66",
+                ip_dst="192.168.1.10",
                 eth_src="AA:BB:CC:DD:EE:FF",
                 dns_answer="203.0.113.99",
             )
         )
         self.assertEqual(first_alerts, [])
 
+        monitor.analyze_capture_record(
+            capture_record(
+                **common,
+                dns_response="0",
+                ip_src="192.168.1.10",
+                ip_dst="192.168.1.1",
+            )
+        )
         second_alerts = monitor.analyze_capture_record(
             capture_record(
                 **common,
+                dns_response="1",
                 ip_src="192.168.1.1",
+                ip_dst="192.168.1.10",
                 eth_src="00:11:22:33:44:53",
                 dns_answer="203.0.113.10",
             )

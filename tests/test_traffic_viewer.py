@@ -13,10 +13,11 @@ from arpshield.ui.traffic_viewer import (
     MAX_PACKET_ROWS,
     PACKET_COLUMNS,
     TrafficViewerPanel,
+    build_interface_options,
     capture_interface_target,
     interface_guid,
     packet_fields_to_row,
-    parse_physical_adapters,
+    parse_local_adapters,
     parse_interfaces,
 )
 
@@ -97,18 +98,58 @@ class TrafficViewerTests(unittest.TestCase):
             with self.subTest(interface=interface):
                 self.assertIsNone(capture_interface_target(interface))
 
-    def test_windows_physical_adapter_data_maps_by_guid(self):
-        adapters = parse_physical_adapters(
-            '[{"Name":"Ethernet","Status":"Up",'
-            '"InterfaceGuid":"{12345678-1234-1234-1234-123456789012}"}]'
+    def test_interface_options_show_unconfigured_extcap_without_enabling_capture(self):
+        options = build_interface_options(
+            [("4", "ciscodump (Cisco remote capture)")],
+            {},
+        )
+
+        self.assertEqual(len(options), 1)
+        self.assertIsNone(options[0][1])
+        self.assertEqual(options[0][2], "extcap")
+        self.assertIn("no configurado", options[0][0])
+
+    def test_windows_local_adapter_data_includes_physical_and_virtual_interfaces(self):
+        adapters = parse_local_adapters(
+            '[{"Name":"Ethernet","Status":"Up","HardwareInterface":true,'
+            '"InterfaceGuid":"{12345678-1234-1234-1234-123456789012}",'
+            '"Addresses":["192.168.20.144"]},'
+            '{"Name":"VirtualBox Host-Only","Status":"Up","HardwareInterface":false,'
+            '"InterfaceGuid":"{87654321-4321-4321-4321-210987654321}",'
+            '"Addresses":["192.168.56.1"]}]'
         )
         target = r"\Device\NPF_{12345678-1234-1234-1234-123456789012}"
+        virtual_target = r"\Device\NPF_{87654321-4321-4321-4321-210987654321}"
 
         self.assertEqual(interface_guid(target), "12345678-1234-1234-1234-123456789012")
-        self.assertEqual(
-            adapters[interface_guid(target)],
-            {"name": "Ethernet", "status": "Up"},
+        self.assertEqual(adapters[interface_guid(target)]["hardware_interface"], True)
+        self.assertEqual(adapters[interface_guid(virtual_target)]["hardware_interface"], False)
+        self.assertEqual(adapters[interface_guid(virtual_target)]["status"], "Up")
+        self.assertEqual(adapters[interface_guid(virtual_target)]["addresses"], "192.168.56.1")
+
+    def test_interface_options_keep_unmapped_virtual_and_down_tshark_interfaces(self):
+        interfaces = [
+            ("1", r"\Device\NPF_{12345678-1234-1234-1234-123456789012} (VirtualBox)"),
+            ("2", r"\Device\NPF_{87654321-4321-4321-4321-210987654321} (Disconnected)"),
+            ("3", r"\Device\NPF_Loopback (Adapter for loopback traffic capture)"),
+        ]
+        adapters = parse_local_adapters(
+            '[{"Name":"VirtualBox Host-Only","Status":"Up","HardwareInterface":false,'
+            '"InterfaceGuid":"{12345678-1234-1234-1234-123456789012}",'
+            '"Addresses":["192.168.56.1"]},'
+            '{"Name":"Ethernet 5","Status":"Disconnected","HardwareInterface":false,'
+            '"InterfaceGuid":"{87654321-4321-4321-4321-210987654321}","Addresses":[]}]'
         )
+
+        options = build_interface_options(interfaces, adapters)
+
+        self.assertEqual(len(options), 3)
+        self.assertIn("192.168.56.1", options[0][0])
+        self.assertIn("Up", options[0][0])
+        self.assertIn("Disconnected", options[1][0])
+        self.assertEqual(options[1][2], "Disconnected")
+        self.assertIn("3.", options[2][0])
+        self.assertEqual(options[2][2], "N/D")
 
     def test_packet_fields_format_dhcp_nbns_and_mdns_protocols_instead_of_generic_udp(self):
         dhcp_fields = [""] * len(CAPTURE_FIELDS)

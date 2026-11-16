@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
+import os
 import re
 import socket
 import subprocess
@@ -112,10 +113,14 @@ class ThreatMonitor:
             return entries
 
         gateway_ips: set[str] = set()
-        default_interface_ip = self._get_default_interface_ip()
-        inferred_gateway = self._infer_gateway_from_ipv4(default_interface_ip)
-        if inferred_gateway:
-            gateway_ips.add(inferred_gateway)
+        active_interface_ips = self._get_active_interface_ips()
+        if active_interface_ips is None:
+            default_interface_ip = self._get_default_interface_ip()
+            active_interface_ips = {default_interface_ip} if default_interface_ip else None
+        for interface_ip in active_interface_ips or ():
+            inferred_gateway = self._infer_gateway_from_ipv4(interface_ip)
+            if inferred_gateway:
+                gateway_ips.add(inferred_gateway)
 
         seen_ips: set[str] = set()
         current_interface_ip: str | None = None
@@ -126,13 +131,13 @@ class ThreatMonitor:
             if "Interface" in normalized or "Interfaz" in normalized:
                 iface_match = re.search(r"(\d{1,3}(?:\.\d{1,3}){3})", normalized)
                 current_interface_ip = iface_match.group(1) if iface_match else None
-                if default_interface_ip and current_interface_ip != default_interface_ip:
+                if active_interface_ips and current_interface_ip not in active_interface_ips:
                     continue
                 if current_interface_ip and self._is_usable_host_ip(current_interface_ip):
                     net = ipaddress.ip_network(f"{current_interface_ip}/24", strict=False)
                     gateway_ips.add(str(net.network_address + 1))
                 continue
-            if default_interface_ip and current_interface_ip != default_interface_ip:
+            if active_interface_ips and current_interface_ip not in active_interface_ips:
                 continue
             if "Internet" in normalized or "Direcci" in normalized:
                 continue
@@ -169,6 +174,39 @@ class ThreatMonitor:
             return local_ip
         except OSError:
             return None
+
+    @staticmethod
+    def _get_active_interface_ips() -> set[str] | None:
+        if os.name != "nt":
+            return None
+        command = (
+            "Get-NetAdapter | Where-Object { $_.Status -eq 'Up' } | "
+            "ForEach-Object { Get-NetIPAddress -InterfaceIndex $_.ifIndex "
+            "-AddressFamily IPv4 -ErrorAction SilentlyContinue } | "
+            "Where-Object { $_.AddressState -eq 'Preferred' } | "
+            "Select-Object -ExpandProperty IPAddress"
+        )
+        try:
+            result = subprocess.run(
+                ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                shell=False,
+                check=False,
+                timeout=10,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        if result.returncode != 0:
+            return None
+        ips = {
+            line.strip()
+            for line in result.stdout.splitlines()
+            if ThreatMonitor._is_usable_host_ip(line.strip())
+        }
+        return ips or None
 
     def _infer_gateway_from_ipv4(self, local_ip: str | None = None) -> str | None:
         local_ip = local_ip or self._get_default_interface_ip()

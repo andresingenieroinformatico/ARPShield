@@ -208,7 +208,8 @@ else:
             trusted_description = QLabel(
                 "Antes de la prueba, escanea la red y verifica de forma independiente la IP/MAC. "
                 "Clasifica el router como Gateway y los DNS/DHCP autorizados con sus roles correctos. "
-                "En Tráfico selecciona el adaptador conectado y conserva el filtro predeterminado."
+                "En Tráfico selecciona el adaptador conectado y conserva el filtro predeterminado. "
+                "Si Kali usa VirtualBox Host-Only, selecciona esa interfaz virtual."
             )
             trusted_description.setWordWrap(True)
             trusted_description.setStyleSheet(f"color: {MUTED};")

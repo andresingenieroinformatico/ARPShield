@@ -84,27 +84,44 @@ def capture_interface_target(interface_name: str) -> str | None:
     return target
 
 
-def parse_physical_adapters(output: str) -> dict[str, dict[str, str]]:
+def parse_local_adapters(output: str) -> dict[str, dict[str, str | bool]]:
     if not output.strip():
         return {}
     payload = json.loads(output)
     if isinstance(payload, dict):
         payload = [payload]
-    adapters: dict[str, dict[str, str]] = {}
+    adapters: dict[str, dict[str, str | bool]] = {}
     for item in payload:
         if not isinstance(item, dict):
             continue
         guid = str(item.get("InterfaceGuid", "")).strip("{}").casefold()
         name = str(item.get("Name", "")).strip()
         if guid and name:
+            addresses = item.get("Addresses", [])
+            if isinstance(addresses, str):
+                addresses = [addresses]
+            elif not isinstance(addresses, list):
+                addresses = []
+            address_text = ", ".join(
+                address.strip()
+                for address in addresses
+                if isinstance(address, str) and address.strip()
+            )
+            hardware_interface = item.get("HardwareInterface", False)
             adapters[guid] = {
                 "name": name,
                 "status": str(item.get("Status", "Unknown")),
+                "hardware_interface": hardware_interface is True
+                or (
+                    isinstance(hardware_interface, str)
+                    and hardware_interface.casefold() == "true"
+                ),
+                "addresses": address_text or "sin IP asignada",
             }
     return adapters
 
 
-def windows_physical_adapters() -> dict[str, dict[str, str]]:
+def windows_local_adapters() -> dict[str, dict[str, str | bool]]:
     if os.name != "nt":
         return {}
     result = subprocess.run(
@@ -113,8 +130,16 @@ def windows_physical_adapters() -> dict[str, dict[str, str]]:
             "-NoProfile",
             "-NonInteractive",
             "-Command",
-            "Get-NetAdapter -Physical | "
-            "Select-Object Name, Status, InterfaceGuid | ConvertTo-Json -Compress",
+            "Get-NetAdapter | ForEach-Object { "
+            "$adapter = $_; "
+            "$addresses = @(Get-NetIPAddress -InterfaceIndex $adapter.ifIndex "
+            "-ErrorAction SilentlyContinue | "
+            "Where-Object { $_.AddressState -eq 'Preferred' } | "
+            "Select-Object -ExpandProperty IPAddress); "
+            "[PSCustomObject]@{ Name = $adapter.Name; Status = $adapter.Status; "
+            "InterfaceGuid = $adapter.InterfaceGuid; "
+            "HardwareInterface = $adapter.HardwareInterface; Addresses = $addresses } "
+            "} | ConvertTo-Json -Compress",
         ],
         capture_output=True,
         text=True,
@@ -126,16 +151,54 @@ def windows_physical_adapters() -> dict[str, dict[str, str]]:
     )
     if result.returncode != 0:
         details = result.stderr.strip() or "Get-NetAdapter terminó con error."
-        raise RuntimeError(f"No se pudieron consultar los adaptadores físicos: {details}")
+        raise RuntimeError(f"No se pudieron consultar los adaptadores locales: {details}")
     try:
-        return parse_physical_adapters(result.stdout)
+        return parse_local_adapters(result.stdout)
     except (json.JSONDecodeError, TypeError) as exc:
-        raise RuntimeError("Windows devolvió una lista de adaptadores físicos no válida.") from exc
+        raise RuntimeError("Windows devolvió una lista de adaptadores locales no válida.") from exc
 
 
 def interface_guid(capture_target: str) -> str | None:
     match = re.search(r"\{([0-9a-fA-F-]{36})\}", capture_target)
     return match.group(1).casefold() if match else None
+
+
+def interface_display_label(
+    interface_id: str,
+    tshark_name: str,
+    adapter: dict[str, str | bool] | None,
+) -> str:
+    if not adapter:
+        return f"{interface_id}. {tshark_name} · IP no disponible · estado no disponible"
+    adapter_kind = "físico" if adapter["hardware_interface"] else "virtual"
+    return (
+        f"{interface_id}. {adapter['name']} · {adapter['addresses']} · "
+        f"{adapter_kind} · {adapter['status']} · {tshark_name}"
+    )
+
+
+def build_interface_options(
+    interfaces: list[tuple[str, str]],
+    adapters: dict[str, dict[str, str | bool]],
+) -> list[tuple[str, str | None, str]]:
+    options = []
+    for interface_id, name in interfaces:
+        target = capture_interface_target(name)
+        if not target:
+            extcap_target = name.strip().split(maxsplit=1)[0] if name.strip() else ""
+            if extcap_target.casefold() in UNSUPPORTED_EXTCAP_INTERFACES:
+                options.append(
+                    (
+                        f"{interface_id}. {name} · extcap no configurado · IP/estado no disponibles",
+                        None,
+                        "extcap",
+                    )
+                )
+            continue
+        adapter = adapters.get(interface_guid(target) or "")
+        status = str(adapter["status"]) if adapter else "N/D"
+        options.append((interface_display_label(interface_id, name, adapter), target, status))
+    return options
 
 
 def packet_fields_to_row(line: str) -> list[str] | None:
@@ -423,40 +486,39 @@ else:
                 return
 
             try:
-                physical_adapters = windows_physical_adapters()
+                local_adapters = windows_local_adapters()
             except (OSError, subprocess.TimeoutExpired, RuntimeError) as exc:
-                self.status_label.setText(f"No se pudieron verificar los adaptadores físicos de Windows: {exc}")
-                self.start_button.setEnabled(False)
-                return
+                local_adapters = {}
+                adapter_warning = (
+                    f"No se pudieron consultar IP/estado de Windows ({exc}); "
+                    "se mostrarán los nombres TShark sin enriquecimiento."
+                )
+            else:
+                adapter_warning = ""
 
-            for interface_id, name in interfaces:
-                target = capture_interface_target(name)
-                if target:
-                    guid = interface_guid(target)
-                    adapter = physical_adapters.get(guid or "")
-                    if os.name == "nt" and not adapter:
-                        continue
-                    if adapter:
-                        status = adapter["status"]
-                        label = f"{interface_id}. {adapter['name']} · {status} · {name}"
-                        self.interface_combo.addItem(label, target)
-                        self.interface_combo.setItemData(
-                            self.interface_combo.count() - 1,
-                            status,
-                            Qt.ItemDataRole.UserRole + 1,
-                        )
-                    else:
-                        self.interface_combo.addItem(f"{interface_id}. {name}", target)
+            interface_options = build_interface_options(interfaces, local_adapters)
+            first_capture_index = None
+            for label, target, status in interface_options:
+                self.interface_combo.addItem(label, target)
+                self.interface_combo.setItemData(
+                    self.interface_combo.count() - 1,
+                    status,
+                    Qt.ItemDataRole.UserRole + 1,
+                )
+                if target and first_capture_index is None:
+                    first_capture_index = self.interface_combo.count() - 1
+            if first_capture_index is not None:
+                self.interface_combo.setCurrentIndex(first_capture_index)
             self.start_button.setEnabled(self.interface_combo.count() > 0)
             if self.interface_combo.count():
                 self.status_label.setText(
-                    f"TShark listo: {self.interface_combo.count()} adaptadores físicos disponibles. "
-                    "Selecciona el que está conectado a la red."
+                    f"TShark lista {self.interface_combo.count()} interfaces. "
+                    "Selecciona una fuente local de captura (física o virtual). "
+                    f"{adapter_warning}"
                 )
             else:
                 self.status_label.setText(
-                    "No se encontró un adaptador físico asociado a Npcap. Comprueba que Ethernet/Wi-Fi "
-                    "esté habilitado, tenga controlador y aparezca en la lista de interfaces de TShark."
+                    f"TShark no listó interfaces de captura. Comprueba Npcap y permisos. {adapter_warning}"
                 )
 
         def start_capture(self) -> None:
@@ -468,10 +530,13 @@ else:
 
             interface_name = self.interface_combo.currentData()
             if not interface_name:
-                self.status_label.setText("La interfaz seleccionada no es una fuente de captura local.")
+                self.status_label.setText(
+                    "La fuente extcap seleccionada necesita configuración adicional; "
+                    "elige una interfaz local de Npcap para capturar."
+                )
                 return
             adapter_status = self.interface_combo.currentData(Qt.ItemDataRole.UserRole + 1)
-            if adapter_status and adapter_status.casefold() != "up":
+            if adapter_status and adapter_status.casefold() not in {"up", "n/d", "unknown"}:
                 self.status_label.setText(
                     f"El adaptador seleccionado está {adapter_status}; conéctalo a la red antes de capturar."
                 )
