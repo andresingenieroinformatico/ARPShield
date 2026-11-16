@@ -298,6 +298,8 @@ class ThreatMonitorTests(unittest.TestCase):
                 ),
             ), patch.object(
                 monitor, "_get_active_interface_ips", return_value={"192.168.1.10"}
+            ), patch.object(
+                monitor, "_get_active_gateway_ips", return_value={"192.168.1.1"}
             ):
                 entries = monitor.discover_local_network()
 
@@ -333,10 +335,11 @@ class ThreatMonitorTests(unittest.TestCase):
 
     def test_discover_local_network_includes_active_virtual_laboratory_interface(self):
         fake_output = (
-            "Interface: 192.168.20.144 --- 0x12\r\n"
-            "  192.168.20.1     00-11-22-33-44-55     dynamic\r\n"
-            "Interface: 192.168.56.1 --- 0x22\r\n"
-            "  192.168.56.100   AA-BB-CC-DD-EE-FF     dynamic\r\n"
+            "Interface: 10.77.3.8 --- 0x12\r\n"
+            "  10.77.3.254      00-11-22-33-44-55     dynamic\r\n"
+            "  10.77.3.20       00-11-22-33-44-66     dynamic\r\n"
+            "Interface: 172.24.9.1 --- 0x22\r\n"
+            "  172.24.9.100     AA-BB-CC-DD-EE-FF     dynamic\r\n"
         ).encode("cp850")
 
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -352,14 +355,18 @@ class ThreatMonitorTests(unittest.TestCase):
             ), patch.object(
                 monitor,
                 "_get_active_interface_ips",
-                return_value={"192.168.20.144", "192.168.56.1"},
+                return_value={"10.77.3.8", "172.24.9.1"},
+            ), patch.object(
+                monitor,
+                "_get_active_gateway_ips",
+                return_value={"10.77.3.254"},
             ):
                 entries = monitor.discover_local_network()
 
-            self.assertEqual(
-                {entry["ip_address"] for entry in entries},
-                {"192.168.20.1", "192.168.56.100"},
-            )
+            by_ip = {entry["ip_address"]: entry for entry in entries}
+            self.assertEqual(set(by_ip), {"10.77.3.254", "10.77.3.20", "172.24.9.100"})
+            self.assertEqual(by_ip["10.77.3.254"]["device_type"], "GATEWAY")
+            self.assertEqual(by_ip["172.24.9.100"]["device_type"], "KNOWN_HOST")
 
     def test_refresh_baseline_counts_latest_scan_without_counting_historical_baseline(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

@@ -112,15 +112,11 @@ class ThreatMonitor:
         if not stdout and stderr:
             return entries
 
-        gateway_ips: set[str] = set()
+        gateway_ips = self._get_active_gateway_ips() or set()
         active_interface_ips = self._get_active_interface_ips()
         if active_interface_ips is None:
             default_interface_ip = self._get_default_interface_ip()
             active_interface_ips = {default_interface_ip} if default_interface_ip else None
-        for interface_ip in active_interface_ips or ():
-            inferred_gateway = self._infer_gateway_from_ipv4(interface_ip)
-            if inferred_gateway:
-                gateway_ips.add(inferred_gateway)
 
         seen_ips: set[str] = set()
         current_interface_ip: str | None = None
@@ -133,9 +129,6 @@ class ThreatMonitor:
                 current_interface_ip = iface_match.group(1) if iface_match else None
                 if active_interface_ips and current_interface_ip not in active_interface_ips:
                     continue
-                if current_interface_ip and self._is_usable_host_ip(current_interface_ip):
-                    net = ipaddress.ip_network(f"{current_interface_ip}/24", strict=False)
-                    gateway_ips.add(str(net.network_address + 1))
                 continue
             if active_interface_ips and current_interface_ip not in active_interface_ips:
                 continue
@@ -167,6 +160,7 @@ class ThreatMonitor:
     def _get_default_interface_ip() -> str | None:
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as route_socket:
+                # TEST-NET address used only for local route selection; no packet is sent.
                 route_socket.connect(("192.0.2.1", 1))
                 local_ip = route_socket.getsockname()[0]
             if not ThreatMonitor._is_usable_host_ip(local_ip):
@@ -208,12 +202,37 @@ class ThreatMonitor:
         }
         return ips or None
 
-    def _infer_gateway_from_ipv4(self, local_ip: str | None = None) -> str | None:
-        local_ip = local_ip or self._get_default_interface_ip()
-        if not local_ip or not self._is_usable_host_ip(local_ip):
+    @staticmethod
+    def _get_active_gateway_ips() -> set[str] | None:
+        if os.name != "nt":
             return None
-        network = ipaddress.ip_network(f"{local_ip}/24", strict=False)
-        return str(network.network_address + 1)
+        command = (
+            "Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' "
+            "-ErrorAction SilentlyContinue | "
+            "Where-Object { $_.NextHop -and $_.NextHop -ne '0.0.0.0' } | "
+            "Select-Object -ExpandProperty NextHop -Unique"
+        )
+        try:
+            result = subprocess.run(
+                ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                shell=False,
+                check=False,
+                timeout=10,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        if result.returncode != 0:
+            return None
+        gateways = {
+            line.strip()
+            for line in result.stdout.splitlines()
+            if ThreatMonitor._is_usable_host_ip(line.strip())
+        }
+        return gateways or None
 
     def check_for_anomalies(self) -> list[dict[str, Any]]:
         observed = self.discover_local_network()

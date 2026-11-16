@@ -49,7 +49,7 @@ TShark se gestiona de forma asíncrona con `QProcess`. La interfaz conserva hast
    - La aplicación inicia en hilo principal con privilegios estándar de usuario.
    - Valida la integridad de la base de datos local SQLite mediante hash SHA-256.
 2. **Construcción de Línea Base:**
-   - El escaneo agrega equipos observados a la línea base. El usuario verifica de forma independiente los datos y clasifica gateway, DNS y DHCP autorizados desde Ajustes; el escaneo no debe considerarse prueba de legitimidad.
+   - El escaneo agrega equipos observados a la línea base. En Windows, el rol `GATEWAY` se asigna usando las rutas IPv4 predeterminadas configuradas por el sistema; no se presupone una máscara `/24` ni que el gateway termine en `.1`. Los adaptadores sin gateway predeterminado (por ejemplo, Host-Only) siguen incluyéndose como interfaces y sus equipos se registran como hosts. El usuario verifica de forma independiente los datos y clasifica gateway, DNS y DHCP autorizados desde Ajustes; el escaneo no debe considerarse prueba de legitimidad.
 3. **Inspección en Tiempo Real:**
    - TShark/Npcap captura ARP, IPv4/IPv6, DNS, DHCP/DHCPv6, LLMNR, NBNS, mDNS e ICMPv6/NDP en la interfaz seleccionada.
    - El motor compara los campos observados con la tabla de confianza y busca respuestas conflictivas en la misma captura.
