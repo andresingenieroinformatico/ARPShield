@@ -36,6 +36,22 @@ GREEN = "#25c878"
 ORANGE = "#f39c12"
 RED = "#e74c3c"
 PURPLE = "#a45bb5"
+COLOMBIA_TIMEZONE = timezone(timedelta(hours=-5), "COT")
+
+
+def format_colombia_timestamp(value: Any) -> str:
+    if value is None:
+        return "--"
+    timestamp = str(value).strip()
+    if not timestamp:
+        return "--"
+    try:
+        parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    except ValueError:
+        return timestamp
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(COLOMBIA_TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def alert_details_text(alert: dict[str, Any]) -> str:
@@ -46,7 +62,9 @@ def alert_details_text(alert: dict[str, Any]) -> str:
         evidence_details = {"raw_evidence_details": raw_details}
     details = {
         "ID": alert.get("id"),
-        "Fecha UTC": alert.get("timestamp_utc"),
+        "Fecha y hora Colombia (UTC-05:00)": format_colombia_timestamp(
+            alert.get("timestamp_utc")
+        ),
         "Tipo": alert.get("alert_type"),
         "Severidad": alert.get("severity"),
         "IP afectada": alert.get("spoofed_ip"),
@@ -242,7 +260,7 @@ class DashboardPanel(QWidget):
         table_title = QLabel("Alertas recientes")
         table_title.setStyleSheet(f"font-size: 15px; font-weight: 700; color: {TEXT};")
         self.alert_table = QTableWidget(0, 6)
-        self.alert_table.setHorizontalHeaderLabels(["Fecha y hora", "Tipo", "Severidad", "IP afectada", "MAC observada", "Evidencia"])
+        self.alert_table.setHorizontalHeaderLabels(["Fecha y hora (Colombia)", "Tipo", "Severidad", "IP afectada", "MAC observada", "Evidencia"])
         self.alert_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.alert_table.verticalHeader().setVisible(False)
         self.alert_table.setAlternatingRowColors(True)
@@ -342,7 +360,7 @@ class DashboardPanel(QWidget):
         self.alert_table.setUpdatesEnabled(False)
         for row_index, alert in enumerate(alerts):
             values = [
-                str(alert.get("timestamp_utc", "--")),
+                format_colombia_timestamp(alert.get("timestamp_utc")),
                 str(alert.get("alert_type", "--")).replace("_", " ").title(),
                 str(alert.get("severity", "LOW")),
                 str(alert.get("spoofed_ip", "--")),
