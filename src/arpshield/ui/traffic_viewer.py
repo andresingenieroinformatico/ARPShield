@@ -33,7 +33,7 @@ except ModuleNotFoundError:  # pragma: no cover
     QTableWidget = QTableWidgetItem = QVBoxLayout = QWidget = None
 
 
-FIELD_COUNT = 17
+FIELD_COUNT = len(CAPTURE_FIELDS)
 MAX_PACKET_ROWS = 500
 PACKET_BATCH_SIZE = 50
 PACKET_COLUMNS = ["Hora", "N.º", "Protocolo", "IP origen", "IP destino", "MAC origen", "MAC destino", "Información"]
@@ -140,20 +140,81 @@ def interface_guid(capture_target: str) -> str | None:
 
 def packet_fields_to_row(line: str) -> list[str] | None:
     fields = line.rstrip("\r\n").split("\t")
+    if not any(fields):
+        return None
     if len(fields) < FIELD_COUNT:
         fields.extend([""] * (FIELD_COUNT - len(fields)))
     elif len(fields) > FIELD_COUNT:
         fields = fields[:FIELD_COUNT]
 
-    timestamp, number, protocols, eth_src, eth_dst, arp_opcode, arp_src_ip, arp_src_mac, arp_dst_ip, arp_dst_mac, dns_query, dns_response, dns_a, ip_src, ip_dst, ipv6_src, ipv6_dst = fields
-    if not any(fields):
-        return None
+    (
+        timestamp,
+        number,
+        protocols,
+        eth_src,
+        eth_dst,
+        arp_opcode,
+        arp_src_ip,
+        arp_src_mac,
+        arp_dst_ip,
+        arp_dst_mac,
+        dns_query,
+        dns_response,
+        dns_a,
+        ip_src,
+        ip_dst,
+        ipv6_src,
+        ipv6_dst,
+        dhcp_type,
+        dhcp_server_id,
+        dhcp_id,
+        _dns_id,
+        nbns_id,
+        nbns_response,
+        nbns_name,
+        nbns_addr,
+        icmpv6_type,
+        ndp_na_target,
+        ndp_ns_target,
+        dns_aaaa,
+        dhcpv6_msgtype,
+        dhcpv6_xid,
+        udp_srcport,
+        udp_dstport,
+    ) = fields
 
-    protocol_names = protocols.split(":")
+    protocol_names = [name.casefold() for name in protocols.split(":") if name]
+    known_protocols = {
+        "arp",
+        "dns",
+        "dhcp",
+        "dhcpv6",
+        "bootp",
+        "llmnr",
+        "nbns",
+        "mdns",
+        "icmpv6",
+        "icmp",
+        "tcp",
+        "udp",
+        "http",
+        "tls",
+    }
     protocol = next(
-        (name.upper() for name in reversed(protocol_names) if name in {"arp", "dns", "tcp", "udp", "icmp", "icmpv6", "http", "tls"}),
-        protocol_names[-1].upper() if protocol_names and protocol_names[-1] else "OTRO",
+        (
+            "DHCP" if name == "bootp" else name.upper()
+            for name in reversed(protocol_names)
+            if name in known_protocols
+        ),
+        protocol_names[-1].upper() if protocol_names else "OTRO",
     )
+    udp_ports = {udp_srcport.strip(), udp_dstport.strip()}
+    if protocol in {"DNS", "UDP"}:
+        if "5353" in udp_ports:
+            protocol = "MDNS"
+        elif "5355" in udp_ports:
+            protocol = "LLMNR"
+
     source_ip = ip_src or ipv6_src or arp_src_ip or "—"
     destination_ip = ip_dst or ipv6_dst or arp_dst_ip or "—"
     source_mac = eth_src or arp_src_mac or "—"
@@ -165,12 +226,45 @@ def packet_fields_to_row(line: str) -> list[str] | None:
         details.append(operation)
         if arp_src_ip and arp_dst_ip:
             details.append(f"{arp_src_ip} → {arp_dst_ip}")
+    if dhcp_type or protocol == "DHCP":
+        dhcp_names = {"1": "Discover", "2": "Offer", "3": "Request", "5": "ACK"}
+        if dhcp_type:
+            details.append(f"DHCP {dhcp_names.get(dhcp_type, f'tipo {dhcp_type}')}")
+        if dhcp_server_id:
+            details.append(f"Servidor: {dhcp_server_id}")
+        if dhcp_id:
+            details.append(f"TxID: {dhcp_id}")
+    if dhcpv6_msgtype or protocol == "DHCPV6":
+        if dhcpv6_msgtype:
+            details.append(f"DHCPv6 tipo {dhcpv6_msgtype}")
+        if dhcpv6_xid:
+            details.append(f"TxID: {dhcpv6_xid}")
     if dns_query:
         details.append(f"Consulta DNS: {dns_query}")
     elif dns_response:
         details.append("Respuesta DNS")
     if dns_a:
         details.append(f"A: {dns_a}")
+    if dns_aaaa:
+        details.append(f"AAAA: {dns_aaaa}")
+    if nbns_name:
+        nbns_kind = "Respuesta NBNS" if nbns_response in {"1", "True", "true"} else "Consulta NBNS"
+        details.append(f"{nbns_kind}: {nbns_name}")
+        if nbns_addr:
+            details.append(f"IP: {nbns_addr}")
+        elif nbns_id:
+            details.append(f"TxID: {nbns_id}")
+    if icmpv6_type:
+        icmp_labels = {
+            "133": "Router Solicitation",
+            "134": "Router Advertisement",
+            "135": "Neighbor Solicitation",
+            "136": "Neighbor Advertisement",
+        }
+        details.append(icmp_labels.get(icmpv6_type, f"ICMPv6 tipo {icmpv6_type}"))
+        ndp_target = ndp_na_target or ndp_ns_target
+        if ndp_target:
+            details.append(f"Objetivo: {ndp_target}")
 
     return [
         timestamp or "—",
@@ -382,6 +476,8 @@ else:
                     f"El adaptador seleccionado está {adapter_status}; conéctalo a la red antes de capturar."
                 )
                 return
+            if self.monitor and hasattr(self.monitor, "reload_baseline"):
+                self.monitor.reload_baseline()
             display_filter = self.filter_input.text().strip() or DEFAULT_CAPTURE_FILTER
             arguments = self._live_capture_arguments(interface_name, display_filter)
             self._mode = "live"
@@ -443,7 +539,14 @@ else:
             if not self.tshark_path:
                 return
 
+            if self.monitor and hasattr(self.monitor, "reset_detector"):
+                self.monitor.reset_detector()
             display_filter = self.filter_input.text().strip() or DEFAULT_CAPTURE_FILTER
+            file_filter = (
+                f"({display_filter}) or ip or ipv6"
+                if display_filter == DEFAULT_CAPTURE_FILTER
+                else display_filter
+            )
             self._mode = "file"
             self._capture_source = f"Archivo PCAP/PCAPNG: {Path(path).name}"
             self._stdout_buffer = ""
@@ -453,11 +556,11 @@ else:
             self._capture_stderr = ""
             self._captured_record_count = 0
             self.packet_table.setRowCount(0)
-            fields = self._packet_arguments(display_filter)
+            fields = self._packet_arguments(file_filter)
             fields = fields[fields.index("-T") :]
             self._set_running(True)
             self.status_label.setText(f"Analizando {Path(path).name} · filtro: {display_filter}")
-            self.process.start(self.tshark_path, ["-n", "-r", path, "-Y", display_filter, *fields])
+            self.process.start(self.tshark_path, ["-n", "-r", path, "-Y", file_filter, *fields])
 
         def _read_output(self) -> None:
             text = bytes(self.process.readAllStandardOutput()).decode("utf-8", errors="replace")

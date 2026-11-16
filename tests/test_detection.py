@@ -351,6 +351,73 @@ class SpoofingDetectionTests(unittest.TestCase):
         self.assertEqual(alerts[0]["alert_type"], "NDP_SPOOFING")
         self.assertEqual(alerts[0]["severity"], "MEDIUM")
 
+    def test_detects_dynamic_arp_conflict_and_multiple_ips_without_prior_baseline(self):
+        monitor = self._monitor()
+        monitor.analyze_capture_record(
+            capture_record(
+                protocols="eth:arp",
+                eth_src="00:11:22:33:44:55",
+                arp_opcode="2",
+                arp_src_ip="10.0.0.1",
+                arp_src_mac="00:11:22:33:44:55",
+            )
+        )
+
+        alerts = monitor.analyze_capture_record(
+            capture_record(
+                protocols="eth:arp",
+                eth_src="AA:BB:CC:DD:EE:FF",
+                arp_opcode="2",
+                arp_src_ip="10.0.0.1",
+                arp_src_mac="AA:BB:CC:DD:EE:FF",
+            )
+        )
+        self.assertEqual(alerts[0]["alert_type"], "ARP_SPOOFING")
+        self.assertEqual(alerts[0]["attacker_mac"], "AA:BB:CC:DD:EE:FF")
+
+        multi_alerts = monitor.analyze_capture_record(
+            capture_record(
+                protocols="eth:arp",
+                eth_src="AA:BB:CC:DD:EE:FF",
+                arp_opcode="2",
+                arp_src_ip="10.0.0.25",
+                arp_src_mac="AA:BB:CC:DD:EE:FF",
+            )
+        )
+        self.assertTrue(any(a["alert_type"] == "MULTIPLE_IPS_PER_MAC" for a in multi_alerts))
+
+    def test_selects_untrusted_attacker_mac_when_attacker_responds_before_trusted_server(self):
+        self.database.add_baseline_entry("192.168.1.1", "00:11:22:33:44:53", "GATEWAY")
+        monitor = self._monitor()
+        common = {
+            "protocols": "eth:ip:udp:dns",
+            "dns_query": "bank.example.test",
+            "dns_response": "1",
+            "dns_id": "0x9999",
+            "ip_dst": "192.168.1.10",
+        }
+        first_alerts = monitor.analyze_capture_record(
+            capture_record(
+                **common,
+                ip_src="192.168.1.66",
+                eth_src="AA:BB:CC:DD:EE:FF",
+                dns_answer="203.0.113.99",
+            )
+        )
+        self.assertEqual(first_alerts, [])
+
+        second_alerts = monitor.analyze_capture_record(
+            capture_record(
+                **common,
+                ip_src="192.168.1.1",
+                eth_src="00:11:22:33:44:53",
+                dns_answer="203.0.113.10",
+            )
+        )
+        self.assertEqual(len(second_alerts), 1)
+        self.assertEqual(second_alerts[0]["alert_type"], "DNS_SPOOFING")
+        self.assertEqual(second_alerts[0]["attacker_mac"], "AA:BB:CC:DD:EE:FF")
+
 
 if __name__ == "__main__":
     unittest.main()

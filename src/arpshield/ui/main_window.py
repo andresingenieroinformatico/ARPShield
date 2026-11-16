@@ -177,6 +177,7 @@ else:
         def _refresh_visible_dashboard(self) -> None:
             if self.pages.currentIndex() == 0:
                 self.dashboard_widget.refresh()
+                self._filter_dashboard_alerts(self.search_input.text())
 
         def _nav_button(self, text: str, page_name: str) -> QPushButton:
             button = QPushButton(text)
@@ -363,6 +364,7 @@ else:
             self.breadcrumb_label.setText(breadcrumb)
             if index == 0:
                 self.dashboard_widget.refresh()
+                self._filter_dashboard_alerts(self.search_input.text())
             for button in (self.dashboard_nav, self.traffic_nav, self.settings_nav):
                 button.setStyleSheet("")
             active_button = (self.dashboard_nav, self.traffic_nav, self.settings_nav)[index]

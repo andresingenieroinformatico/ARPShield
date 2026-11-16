@@ -264,6 +264,36 @@ class ThreatMonitorTests(unittest.TestCase):
             self.assertEqual(second_check, [])
             self.assertEqual(len(db.list_alerts()), 1)
 
+    def test_discover_local_network_filters_multicast_and_broadcast_and_detects_gateway(self):
+        fake_output = (
+            "Interface: 192.168.1.10 --- 0x12\r\n"
+            "\r\n"
+            "  Internet Address      Physical Address      Type\r\n"
+            "  192.168.1.1           00-11-22-33-44-55     dynamic\r\n"
+            "  192.168.1.25          00-11-22-33-44-66     dynamic\r\n"
+            "  192.168.1.255         ff-ff-ff-ff-ff-ff     static\r\n"
+            "  224.0.0.22            01-00-5e-00-00-16     static\r\n"
+            "  255.255.255.255       ff-ff-ff-ff-ff-ff     static\r\n"
+        ).encode("cp850")
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db = DatabaseManager(Path(tmp_dir) / "arpshield.db")
+            db.initialize()
+            monitor = ThreatMonitor(db)
+
+            with patch(
+                "subprocess.run",
+                return_value=subprocess.CompletedProcess(
+                    args=["arp", "-a"], returncode=0, stdout=fake_output, stderr=b""
+                ),
+            ):
+                entries = monitor.discover_local_network()
+
+            by_ip = {item["ip_address"]: item for item in entries}
+            self.assertEqual(set(by_ip.keys()), {"192.168.1.1", "192.168.1.25"})
+            self.assertEqual(by_ip["192.168.1.1"]["device_type"], "GATEWAY")
+            self.assertEqual(by_ip["192.168.1.25"]["device_type"], "KNOWN_HOST")
+
 
 if __name__ == "__main__":
     unittest.main()

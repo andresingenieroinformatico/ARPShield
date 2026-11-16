@@ -110,6 +110,24 @@ class TrafficViewerTests(unittest.TestCase):
             {"name": "Ethernet", "status": "Up"},
         )
 
+    def test_packet_fields_format_dhcp_nbns_and_mdns_protocols_instead_of_generic_udp(self):
+        dhcp_fields = [""] * len(CAPTURE_FIELDS)
+        dhcp_fields[0] = "2026-11-16 10:00:00"
+        dhcp_fields[1] = "10"
+        dhcp_fields[2] = "eth:ethertype:ip:udp:dhcp"
+        dhcp_fields[3] = "00:11:22:33:44:55"
+        dhcp_fields[4] = "FF:FF:FF:FF:FF:FF"
+        dhcp_fields[13] = "192.168.1.1"
+        dhcp_fields[14] = "255.255.255.255"
+        dhcp_fields[17] = "2"
+        dhcp_fields[18] = "192.168.1.1"
+        dhcp_fields[19] = "0x1234"
+
+        row = packet_fields_to_row("\t".join(dhcp_fields))
+        self.assertEqual(row[2], "DHCP")
+        self.assertIn("DHCP Offer", row[7])
+        self.assertIn("Servidor: 192.168.1.1", row[7])
+
 
 if __name__ == "__main__":
     unittest.main()
