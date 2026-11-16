@@ -229,7 +229,7 @@ class ThreatMonitor:
             return None
         gateways = {
             line.strip()
-            for line in result.stdout.splitlines()
+            for line in ThreatMonitor._decode_command_output(result.stdout).splitlines()
             if ThreatMonitor._is_usable_host_ip(line.strip())
         }
         return gateways or None
