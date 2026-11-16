@@ -386,6 +386,47 @@ class SpoofingDetectionTests(unittest.TestCase):
         )
         self.assertTrue(any(a["alert_type"] == "MULTIPLE_IPS_PER_MAC" for a in multi_alerts))
 
+    def test_detects_arp_reply_burst(self):
+        monitor = self._monitor()
+        alerts = []
+
+        for _ in range(10):
+            alerts.extend(
+                monitor.analyze_capture_record(
+                    capture_record(
+                        protocols="eth:arp",
+                        eth_src="AA:BB:CC:DD:EE:FF",
+                        arp_opcode="2",
+                        arp_src_ip="192.168.1.25",
+                        arp_src_mac="AA:BB:CC:DD:EE:FF",
+                    )
+                )
+            )
+
+        self.assertIn("ARP_BURST_UNSOLICITED", {alert["alert_type"] for alert in alerts})
+
+    def test_reset_detector_clears_correlation_state_before_a_new_capture(self):
+        monitor = self._monitor()
+        first_record = capture_record(
+            protocols="eth:arp",
+            eth_src="00:11:22:33:44:55",
+            arp_opcode="2",
+            arp_src_ip="192.168.1.25",
+            arp_src_mac="00:11:22:33:44:55",
+        )
+        changed_record = capture_record(
+            protocols="eth:arp",
+            eth_src="AA:BB:CC:DD:EE:FF",
+            arp_opcode="2",
+            arp_src_ip="192.168.1.25",
+            arp_src_mac="AA:BB:CC:DD:EE:FF",
+        )
+        monitor.analyze_capture_record(first_record)
+
+        monitor.reset_detector()
+
+        self.assertEqual(monitor.analyze_capture_record(changed_record), [])
+
     def test_selects_untrusted_attacker_mac_when_attacker_responds_before_trusted_server(self):
         self.database.add_baseline_entry("192.168.1.1", "00:11:22:33:44:53", "GATEWAY")
         monitor = self._monitor()

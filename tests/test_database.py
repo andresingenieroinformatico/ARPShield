@@ -164,6 +164,7 @@ class DatabaseManagerTests(unittest.TestCase):
             snapshot = db.dashboard_snapshot(recent_limit=2, trend_days=12)
 
             self.assertEqual(snapshot["baseline_count"], 1)
+            self.assertEqual(snapshot["device_count"], 0)
             self.assertEqual(snapshot["alert_count"], 3)
             self.assertEqual(snapshot["high_severity_count"], 2)
             self.assertEqual(dict(snapshot["alert_type_counts"])["DNS_SPOOFING"], 2)
@@ -187,11 +188,16 @@ class DatabaseManagerTests(unittest.TestCase):
             self.assertEqual(snapshot["high_severity_count"], 0)
             self.assertEqual(snapshot["alert_type_counts"], [])
             self.assertEqual(snapshot["recent_alerts"], [])
+            self.assertEqual(snapshot["device_count"], 0)
+            self.assertEqual(len(current_session.list_alerts()), 1)
 
+            current_session.set_session_device_count(2)
             current_session.add_alert(
                 "DNS_SPOOFING", "CRITICAL", "AA:BB:CC:DD:EE:00", "192.168.1.2", 1, "Alerta actual"
             )
-            self.assertEqual(current_session.dashboard_snapshot()["alert_count"], 1)
+            current_snapshot = current_session.dashboard_snapshot()
+            self.assertEqual(current_snapshot["alert_count"], 1)
+            self.assertEqual(current_snapshot["device_count"], 2)
 
     def test_dashboard_snapshot_rejects_non_positive_limits(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -216,7 +222,9 @@ class ThreatMonitorTests(unittest.TestCase):
             db.initialize()
             monitor = ThreatMonitor(db)
 
-            with patch("subprocess.run", return_value=subprocess.CompletedProcess(args=["arp", "-a"], returncode=0, stdout=fake_output, stderr=b"")):
+            with patch("subprocess.run", return_value=subprocess.CompletedProcess(args=["arp", "-a"], returncode=0, stdout=fake_output, stderr=b"")), patch.object(
+                monitor, "_get_default_interface_ip", return_value=None
+            ):
                 entries = monitor.discover_local_network()
 
             self.assertEqual(len(entries), 1)
@@ -240,7 +248,7 @@ class ThreatMonitorTests(unittest.TestCase):
                 return_value=subprocess.CompletedProcess(
                     args=["arp", "-a"], returncode=0, stdout=fake_output, stderr=b""
                 ),
-            ):
+            ), patch.object(monitor, "_get_default_interface_ip", return_value=None):
                 baseline = monitor.refresh_baseline()
 
             self.assertEqual(baseline[0]["mac_address"], "00:11:22:33:44:55")
@@ -286,13 +294,59 @@ class ThreatMonitorTests(unittest.TestCase):
                 return_value=subprocess.CompletedProcess(
                     args=["arp", "-a"], returncode=0, stdout=fake_output, stderr=b""
                 ),
-            ):
+            ), patch.object(monitor, "_get_default_interface_ip", return_value=None):
                 entries = monitor.discover_local_network()
 
             by_ip = {item["ip_address"]: item for item in entries}
             self.assertEqual(set(by_ip.keys()), {"192.168.1.1", "192.168.1.25"})
             self.assertEqual(by_ip["192.168.1.1"]["device_type"], "GATEWAY")
             self.assertEqual(by_ip["192.168.1.25"]["device_type"], "KNOWN_HOST")
+
+    def test_discover_local_network_ignores_arp_entries_from_other_interfaces(self):
+        fake_output = (
+            "Interface: 192.168.1.10 --- 0x12\r\n"
+            "  192.168.1.1     00-11-22-33-44-55     dynamic\r\n"
+            "Interface: 10.0.0.10 --- 0x22\r\n"
+            "  10.0.0.1        00-11-22-33-44-66     dynamic\r\n"
+        ).encode("cp850")
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db = DatabaseManager(Path(tmp_dir) / "arpshield.db")
+            db.initialize()
+            monitor = ThreatMonitor(db)
+
+            with patch(
+                "subprocess.run",
+                return_value=subprocess.CompletedProcess(
+                    args=["arp", "-a"], returncode=0, stdout=fake_output, stderr=b""
+                ),
+            ), patch.object(monitor, "_get_default_interface_ip", return_value="192.168.1.10"):
+                entries = monitor.discover_local_network()
+
+            self.assertEqual([entry["ip_address"] for entry in entries], ["192.168.1.1"])
+
+    def test_refresh_baseline_counts_latest_scan_without_counting_historical_baseline(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db = DatabaseManager(Path(tmp_dir) / "arpshield.db")
+            db.initialize()
+            for index in range(198):
+                db.add_baseline_entry(
+                    f"10.0.0.{index + 1}",
+                    f"02:00:00:00:{index // 256:02X}:{index % 256:02X}",
+                    "KNOWN_HOST",
+                )
+            monitor = ThreatMonitor(db)
+            observed = [
+                {"ip_address": "192.168.1.10", "mac_address": "00:11:22:33:44:10"},
+                {"ip_address": "192.168.1.11", "mac_address": "00:11:22:33:44:11"},
+            ]
+
+            with patch.object(monitor, "discover_local_network", return_value=observed):
+                monitor.refresh_baseline()
+
+            snapshot = db.dashboard_snapshot()
+            self.assertEqual(snapshot["baseline_count"], 200)
+            self.assertEqual(snapshot["device_count"], 2)
 
 
 if __name__ == "__main__":

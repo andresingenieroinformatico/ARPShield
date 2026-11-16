@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 import re
+import socket
 import subprocess
 from typing import Any
 
@@ -64,6 +65,7 @@ class ThreatMonitor:
 
     def refresh_baseline(self) -> list[dict[str, Any]]:
         discovered = self.discover_local_network()
+        self.database.set_session_device_count(len(discovered))
         trusted_by_ip = {entry["ip_address"]: entry for entry in self.reload_baseline()}
         for item in discovered:
             existing = trusted_by_ip.get(item["ip_address"])
@@ -110,20 +112,27 @@ class ThreatMonitor:
             return entries
 
         gateway_ips: set[str] = set()
-        inferred_gateway = self._infer_gateway_from_ipv4()
+        default_interface_ip = self._get_default_interface_ip()
+        inferred_gateway = self._infer_gateway_from_ipv4(default_interface_ip)
         if inferred_gateway:
             gateway_ips.add(inferred_gateway)
 
         seen_ips: set[str] = set()
+        current_interface_ip: str | None = None
         for line in stdout.splitlines():
             normalized = line.strip()
             if not normalized:
                 continue
             if "Interface" in normalized or "Interfaz" in normalized:
                 iface_match = re.search(r"(\d{1,3}(?:\.\d{1,3}){3})", normalized)
-                if iface_match and self._is_usable_host_ip(iface_match.group(1)):
-                    net = ipaddress.ip_network(f"{iface_match.group(1)}/24", strict=False)
+                current_interface_ip = iface_match.group(1) if iface_match else None
+                if default_interface_ip and current_interface_ip != default_interface_ip:
+                    continue
+                if current_interface_ip and self._is_usable_host_ip(current_interface_ip):
+                    net = ipaddress.ip_network(f"{current_interface_ip}/24", strict=False)
                     gateway_ips.add(str(net.network_address + 1))
+                continue
+            if default_interface_ip and current_interface_ip != default_interface_ip:
                 continue
             if "Internet" in normalized or "Direcci" in normalized:
                 continue
@@ -149,18 +158,24 @@ class ThreatMonitor:
 
         return entries
 
-    def _infer_gateway_from_ipv4(self) -> str | None:
+    @staticmethod
+    def _get_default_interface_ip() -> str | None:
         try:
-            import socket
-
-            host_name = socket.gethostname()
-            local_ip = socket.gethostbyname(host_name)
-            if not self._is_usable_host_ip(local_ip):
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as route_socket:
+                route_socket.connect(("192.0.2.1", 1))
+                local_ip = route_socket.getsockname()[0]
+            if not ThreatMonitor._is_usable_host_ip(local_ip):
                 return None
-            network = ipaddress.ip_network(f"{local_ip}/24", strict=False)
-            return str(network.network_address + 1)
+            return local_ip
         except OSError:
             return None
+
+    def _infer_gateway_from_ipv4(self, local_ip: str | None = None) -> str | None:
+        local_ip = local_ip or self._get_default_interface_ip()
+        if not local_ip or not self._is_usable_host_ip(local_ip):
+            return None
+        network = ipaddress.ip_network(f"{local_ip}/24", strict=False)
+        return str(network.network_address + 1)
 
     def check_for_anomalies(self) -> list[dict[str, Any]]:
         observed = self.discover_local_network()

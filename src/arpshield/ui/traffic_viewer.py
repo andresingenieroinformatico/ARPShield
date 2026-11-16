@@ -476,7 +476,9 @@ else:
                     f"El adaptador seleccionado está {adapter_status}; conéctalo a la red antes de capturar."
                 )
                 return
-            if self.monitor and hasattr(self.monitor, "reload_baseline"):
+            if self.monitor and hasattr(self.monitor, "reset_detector"):
+                self.monitor.reset_detector()
+            elif self.monitor and hasattr(self.monitor, "reload_baseline"):
                 self.monitor.reload_baseline()
             display_filter = self.filter_input.text().strip() or DEFAULT_CAPTURE_FILTER
             arguments = self._live_capture_arguments(interface_name, display_filter)

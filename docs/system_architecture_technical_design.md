@@ -98,13 +98,15 @@ Persistencia en SQLite / evidencias
         +--> Reportes forenses y auditoría
 ```
 
+El indicador de dispositivos muestra el número de entradas IP/MAC observadas en el último escaneo de la interfaz de la ruta predeterminada, no el tamaño acumulado de `trusted_baseline`. Esta línea base conserva entradas históricas y roles confiables; no se elimina al iniciar. Los contadores de alertas/anomalías son de sesión: las alertas anteriores permanecen en SQLite, pero no se incluyen en las métricas de la nueva ejecución. El escaneo consulta la caché ARP del sistema y no garantiza descubrir dispositivos que no hayan generado una asociación ARP visible.
+
 ### 5.4 Cobertura y cautelas de las reglas
 - `GATEWAY_SPOOFING`: discrepancia con una IP clasificada explícitamente como gateway; severidad alta.
 - `ARP_SPOOFING`, `IP_SPOOFING` y `MAC_SPOOFING`: conflictos con pares IP/MAC de la línea base; se muestran como indicios de revisión porque la línea base puede estar obsoleta o el dispositivo puede ser multihomed/virtual.
 - `DNS_SPOOFING`: respuesta de un resolver no incluido en los DNS confiables o respuestas concurrentes distintas; severidad media y requiere comprobar resolvers alternativos, DNS de horizonte dividido y balanceo.
 - `DHCP_SPOOFING` y `DHCPV6_SPOOFING`: servidor no clasificado o respuestas de distintos servidores para una transacción; varios servidores pueden ser legítimos. DHCPv6 se compara por MAC clasificada, no contra direcciones IPv4.
 - `LLMNR_SPOOFING`, `NBNS_SPOOFING`, `MDNS_SPOOFING` y `NDP_SPOOFING`: respuestas o anuncios contradictorios/no clasificados para validación; no son confirmación por sí solos.
-- `MULTIPLE_IPS_PER_MAC` y `ARP_BURST_UNSOLICITED` están reservados en el esquema, pero no tienen reglas de detección implementadas actualmente.
+- `MULTIPLE_IPS_PER_MAC` y `ARP_BURST_UNSOLICITED` tienen reglas heurísticas en la captura: una MAC reclamando varias IP y un umbral de respuestas ARP por ventana de tiempo, respectivamente. La regla de ráfaga no correlaciona cada respuesta con una solicitud previa; debe tratarse como una señal para revisión, no como confirmación de ataque.
 - La detección requiere que TShark exponga los campos y que la interfaz reciba los paquetes. Los tipos y campos ausentes, el filtro, la visibilidad de switch/Wi-Fi y una línea base incompleta reducen la cobertura.
 
 ---

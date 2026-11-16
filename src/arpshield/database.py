@@ -73,6 +73,7 @@ class DatabaseManager:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._session_alert_start_id: int | None = None
+        self._session_device_count = 0
 
     def connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.db_path)
@@ -327,6 +328,11 @@ class DatabaseManager:
         finally:
             connection.close()
 
+    def set_session_device_count(self, count: int) -> None:
+        if count < 0:
+            raise ValueError("El conteo de dispositivos no puede ser negativo")
+        self._session_device_count = count
+
     def list_baseline(self) -> list[dict[str, Any]]:
         connection = self.connect()
         try:
@@ -398,6 +404,7 @@ class DatabaseManager:
             ).fetchall()
             return {
                 "baseline_count": baseline_count,
+                "device_count": self._session_device_count,
                 "alert_count": summary["alert_count"],
                 "high_severity_count": summary["high_severity_count"],
                 "alert_type_counts": [

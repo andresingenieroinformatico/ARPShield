@@ -214,7 +214,7 @@ class DashboardPanel(QWidget):
         self.high_severity_label = QLabel("0")
         self.baseline_label = QLabel("0")
         cards = [
-            ("DISPOSITIVOS DETECTADOS", self.total_devices_label, BLUE, "◉"),
+            ("DISPOSITIVOS DEL ÚLTIMO ESCANEO", self.total_devices_label, BLUE, "◉"),
             ("ALERTAS DE ESTA SESIÓN", self.alerts_label, GREEN, "★"),
             ("RIESGO ALTO / CRÍTICO", self.high_severity_label, ORANGE, "◎"),
             ("ENTRADAS DE CONFIANZA", self.baseline_label, RED, "◆"),
@@ -299,7 +299,7 @@ class DashboardPanel(QWidget):
             trend_days=self.TREND_DAYS,
         )
 
-        self.total_devices_label.setText(str(snapshot["baseline_count"]))
+        self.total_devices_label.setText(str(snapshot["device_count"]))
         self.alerts_label.setText(str(snapshot["alert_count"]))
         self.high_severity_label.setText(str(snapshot["high_severity_count"]))
         self.baseline_label.setText(str(snapshot["baseline_count"]))

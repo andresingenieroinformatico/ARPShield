@@ -206,8 +206,9 @@ else:
             trusted_title = QLabel("Clasificar dispositivos de confianza")
             trusted_title.setStyleSheet("font-size: 15px; font-weight: 700;")
             trusted_description = QLabel(
-                "Escanea la red primero y verifica de forma independiente la IP/MAC antes de asignar un rol. "
-                "Los roles Gateway, DNS y DHCP alimentan las referencias de los detectores."
+                "Antes de la prueba, escanea la red y verifica de forma independiente la IP/MAC. "
+                "Clasifica el router como Gateway y los DNS/DHCP autorizados con sus roles correctos. "
+                "En Tráfico selecciona el adaptador conectado y conserva el filtro predeterminado."
             )
             trusted_description.setWordWrap(True)
             trusted_description.setStyleSheet(f"color: {MUTED};")
@@ -382,13 +383,16 @@ else:
 
         def scan_network(self) -> None:
             try:
-                entries = self.monitor.refresh_baseline()
+                self.monitor.refresh_baseline()
                 self._refresh_trusted_devices()
             except (OSError, sqlite3.Error) as exc:
                 QMessageBox.critical(self, "Error de escaneo", f"No se pudo actualizar la línea base:\n{exc}")
                 return
             self._refresh_visible_dashboard()
-            self.status_label.setText(f"●  {len(entries)} dispositivos en línea base")
+            self.status_label.setText(
+                f"●  {self.monitor.database.dashboard_snapshot()['device_count']} "
+                "dispositivos en el último escaneo"
+            )
 
         def check_alerts(self) -> None:
             try:
